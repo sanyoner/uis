@@ -109,6 +109,12 @@ end
 local FontRegular = loadFont("Verdana",     FONT_BASE .. "Verdana-Font.ttf")
 local FontBold    = loadFont("TahomaBold",  FONT_BASE .. "Tahoma-Modern-Bold.ttf")
 local MenuBgImage = loadImage(PNG_URL, CACHE_DIR .. "/skeezt_menu_bg.png")
+pcall(function()
+    local warn_ = rconsolewarn or warn
+    if not FontRegular then warn_("[skeezt_ui] Verdana font fetch FAILED — falling back to Enum.Font.Code") end
+    if not FontBold    then warn_("[skeezt_ui] Tahoma Bold font fetch FAILED — falling back to Code (no bold)") end
+    if not MenuBgImage then warn_("[skeezt_ui] menuBg PNG fetch FAILED — drawing flat dark background") end
+end)
 
 -- Fallbacks if asset fetch fails (rbxlx, no executor):
 local function applyFont(inst, bold)
@@ -356,22 +362,24 @@ attachWidgets = function(target, body)
         opt = opt or {}
         local mn, mx = opt.Min or 0, opt.Max or 100
         local rounding = opt.Rounding or 0
-        local suffix = opt.Suffix or ""
+        -- Skeet macro uses printf format like "%1.f%%" where %% means literal %.
+        -- In Lua plain string concat, leave %% alone -> render single %.
+        local suffix = (opt.Suffix or ""):gsub("%%%%", "%%")
         local val = math.clamp(opt.Default or mn, mn, mx)
 
         local row = mk("Frame", { Parent = body, BorderSizePixel = 0,
-            Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 })
+            Size = UDim2.new(1, 0, 0, 21), BackgroundTransparency = 1 })
 
         local title = mk("TextLabel", { Parent = row, BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 12),
+            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 10),
             Text = opt.Text or id, TextSize = 11,
             TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Center })
+            TextYAlignment = Enum.TextYAlignment.Top })
         applyFont(title, false); dropShadowText(title)
 
         -- Track
         local track = mk("Frame", { Parent = row, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, 0, 0, 11),
+            Position = UDim2.fromOffset(0, 11), Size = UDim2.new(1, 0, 0, 10),
             BackgroundColor3 = Theme.SliderTrackTop })
         stroke(track, Theme.BorderOuter, 1)
         local trackGrad = Instance.new("UIGradient"); trackGrad.Name = "\0"; trackGrad.Rotation = 90
@@ -393,9 +401,10 @@ attachWidgets = function(target, body)
                 math.max(0, Theme.Accent.B - 0.18)))}
         fillGrad.Parent = fill
 
-        -- Value text overlaid
+        -- Value text overlaid, Bold, slightly smaller than label
         local valLbl = mk("TextLabel", { Parent = track, BackgroundTransparency = 1,
-            Size = UDim2.fromScale(1, 1), TextSize = 11,
+            Position = UDim2.fromOffset(0, -1), Size = UDim2.fromScale(1, 1),
+            TextSize = 10,
             TextColor3 = Color3.fromRGB(230,230,230),
             TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
@@ -459,16 +468,16 @@ attachWidgets = function(target, body)
         if default == nil then default = values[1] end
 
         local row = mk("Frame", { Parent = body, BorderSizePixel = 0,
-            Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 })
+            Size = UDim2.new(1, 0, 0, 23), BackgroundTransparency = 1 })
         local title = mk("TextLabel", { Parent = row, BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 12),
+            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 10),
             Text = opt.Text or id, TextSize = 11,
             TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Center })
+            TextYAlignment = Enum.TextYAlignment.Top })
         applyFont(title, false); dropShadowText(title)
 
         local btn = mk("TextButton", { Parent = row, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, 0, 0, 13),
+            Position = UDim2.fromOffset(0, 11), Size = UDim2.new(1, 0, 0, 12),
             BackgroundColor3 = Theme.ComboFill, AutoButtonColor = false,
             Text = "", TextSize = 11, TextColor3 = Theme.Text })
         stroke(btn, Theme.BorderOuter, 1)
@@ -849,34 +858,32 @@ end
 -- ──────────────────────────────────────────────────────────────────────────
 local function buildGroupbox(parent, name)
     local box = mk("Frame", { Parent = parent, BorderSizePixel = 0,
-        Size = UDim2.new(1, 0, 0, 60),
+        Size = UDim2.new(1, 0, 0, 24),
         BackgroundColor3 = Theme.OuterFill,
         AutomaticSize = Enum.AutomaticSize.Y })
     doubleBorder(box, Theme.BorderOuter, Theme.BorderInner)
 
-    -- Title strip — small dark band that breaks the top border, with gray text
-    local titleStrip = mk("Frame", { Parent = box, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(8, -1), Size = UDim2.fromOffset(8 + 4*#name, 3),
-        BackgroundColor3 = Theme.OuterFill, ZIndex = 3 })
-    -- TextLabel that sits on top, breaking the border visually
-    local titleLbl = mk("TextLabel", { Parent = box, BackgroundColor3 = Theme.OuterFill,
-        BorderSizePixel = 0, Position = UDim2.fromOffset(8, -7),
-        Size = UDim2.fromOffset(0, 12),
-        Text = " " .. (name or "") .. " ", TextSize = 11, TextColor3 = Theme.Title,
+    -- Title — sits ON the top border line, with same-color fill masking the
+    -- border on either side of the text (Skeet's title-break rect). The title
+    -- uses the box's BG color so it cleanly cuts the border line.
+    local titleLbl = mk("TextLabel", { Parent = box,
+        BackgroundColor3 = Theme.OuterFill, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(9, -6), Size = UDim2.fromOffset(0, 11),
+        Text = "  " .. (name or "") .. "  ", TextSize = 11,
+        TextColor3 = Theme.Title,
         TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
-        AutomaticSize = Enum.AutomaticSize.X, ZIndex = 4 })
+        AutomaticSize = Enum.AutomaticSize.X, ZIndex = 5 })
     applyFont(titleLbl, true); dropShadowText(titleLbl)
-    titleStrip:Destroy() -- the TextLabel itself does the border-break with its bg fill
 
-    -- Body inside box, padded
+    -- Body inside box, tight Skeet-style padding (4px each side)
     local body = mk("Frame", { Parent = box, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(8, 10), Size = UDim2.new(1, -16, 1, -16),
+        Position = UDim2.fromOffset(4, 8), Size = UDim2.new(1, -8, 1, -12),
         BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y })
-    uiList(body, Enum.FillDirection.Vertical, 4)
-    -- Reserve a 6px top spacer like Skeet's CustomSpacing(9.f)
+    uiList(body, Enum.FillDirection.Vertical, 2)
+    -- Top spacer below title (Skeet CustomSpacing(9.f) accounts for title height)
     local topSpacer = mk("Frame", { Parent = body, BorderSizePixel = 0,
-        Size = UDim2.new(1, 0, 0, 4), BackgroundTransparency = 1, LayoutOrder = -1 })
+        Size = UDim2.new(1, 0, 0, 2), BackgroundTransparency = 1, LayoutOrder = -1 })
 
     local gb = { _frame = box, _body = body, _title = titleLbl }
     attachWidgets(gb, body)
@@ -993,16 +1000,12 @@ function Library:CreateWindow(opts)
             Size = UDim2.fromOffset(75, 60), BackgroundColor3 = Theme.TabsFill,
             AutoButtonColor = false, Text = "", ZIndex = 3 })
 
+        -- Selected-tab right edge: a 1px dark seam, matches Skeet's border seam
+        -- where the selected tab visually joins the content area.
         local accent = mk("Frame", { Parent = tabBtn, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(2, 60),
-            BackgroundColor3 = Theme.Accent, Visible = false, ZIndex = 4 })
-        local accentGrad = Instance.new("UIGradient"); accentGrad.Name = "\0"
-        accentGrad.Rotation = 90
-        accentGrad.Color = ColorSequence.new{
-            ColorSequenceKeypoint.new(0,   Theme.UCcyan),
-            ColorSequenceKeypoint.new(0.5, Theme.UCpink),
-            ColorSequenceKeypoint.new(1,   Theme.UCyellow)}
-        accentGrad.Parent = accent
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(1, 60),
+            BackgroundColor3 = Theme.OuterFill, Visible = false, ZIndex = 5 })
 
         local icon = mk("TextLabel", { Parent = tabBtn, BackgroundTransparency = 1,
             Position = UDim2.fromOffset(0, 6), Size = UDim2.fromOffset(75, 38),
@@ -1060,9 +1063,11 @@ function Library:CreateWindow(opts)
             local sel = (t == tab)
             t._page.Visible = sel
             t._accent.Visible = sel
+            -- Selected tab: lifts to match window fill so it visually "joins"
+            -- the content area; unselected stays in the darker tab-strip well.
             t._btn.BackgroundColor3 = sel and Theme.OuterFill or Theme.TabsFill
-            t._icon.TextColor3 = sel and Theme.Text or Theme.SubText
-            t._name.TextColor3 = sel and Theme.Title or Theme.SubText
+            t._icon.TextColor3 = sel and Color3.fromRGB(235, 235, 235) or Theme.SubText
+            t._name.TextColor3 = sel and Theme.Title or Color3.fromRGB(95, 95, 95)
         end
         self_._activeTab = tab
     end
