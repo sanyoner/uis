@@ -286,9 +286,9 @@ attachWidgets = function(target, body)
     function target:AddToggle(id, opt)
         opt = opt or {}
         local row = mk("Frame", { Parent = body, BorderSizePixel = 0,
-            Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1 })
+            Size = UDim2.new(1, 0, 0, 15), BackgroundTransparency = 1 })
 
-        -- 9px checkbox at left
+        -- 9px checkbox at left, vertically centered in a 15-tall row
         local box = mk("Frame", { Parent = row, BorderSizePixel = 0,
             Size = UDim2.fromOffset(9, 9), Position = UDim2.fromOffset(0, 3),
             BackgroundColor3 = Theme.CheckboxOffBot })
@@ -301,7 +301,7 @@ attachWidgets = function(target, body)
         boxGrad.Parent = box
 
         local label = mk("TextLabel", { Parent = row, BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(14, -1), Size = UDim2.new(1, -14, 1, 0),
+            Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -14, 1, 0),
             Text = opt.Text or id, TextSize = 11,
             TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center })
@@ -407,18 +407,18 @@ attachWidgets = function(target, body)
         local val = math.clamp(opt.Default or mn, mn, mx)
 
         local row = mk("Frame", { Parent = body, BorderSizePixel = 0,
-            Size = UDim2.new(1, 0, 0, 21), BackgroundTransparency = 1 })
+            Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1 })
 
         local title = mk("TextLabel", { Parent = row, BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 10),
+            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 12),
             Text = opt.Text or id, TextSize = 11,
             TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Top })
+            TextYAlignment = Enum.TextYAlignment.Center })
         applyFont(title, false); dropShadowText(title)
 
         -- Track
         local track = mk("Frame", { Parent = row, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 11), Size = UDim2.new(1, 0, 0, 10),
+            Position = UDim2.fromOffset(0, 13), Size = UDim2.new(1, 0, 0, 11),
             BackgroundColor3 = Theme.SliderTrackTop })
         stroke(track, Theme.BorderOuter, 1)
         local trackGrad = Instance.new("UIGradient"); trackGrad.Name = "\0"; trackGrad.Rotation = 90
@@ -507,16 +507,16 @@ attachWidgets = function(target, body)
         if default == nil then default = values[1] end
 
         local row = mk("Frame", { Parent = body, BorderSizePixel = 0,
-            Size = UDim2.new(1, 0, 0, 23), BackgroundTransparency = 1 })
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 })
         local title = mk("TextLabel", { Parent = row, BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 10),
+            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 12),
             Text = opt.Text or id, TextSize = 11,
             TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Top })
+            TextYAlignment = Enum.TextYAlignment.Center })
         applyFont(title, false); dropShadowText(title)
 
         local btn = mk("TextButton", { Parent = row, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 11), Size = UDim2.new(1, 0, 0, 12),
+            Position = UDim2.fromOffset(0, 13), Size = UDim2.new(1, 0, 0, 13),
             BackgroundColor3 = Theme.ComboFill, AutoButtonColor = false,
             Text = "", TextSize = 11, TextColor3 = Theme.Text })
         stroke(btn, Theme.BorderOuter, 1)
@@ -914,9 +914,11 @@ local function buildGroupbox(parent, name)
         AutomaticSize = Enum.AutomaticSize.X, ZIndex = 5 })
     applyFont(titleLbl, true); dropShadowText(titleLbl)
 
-    -- Body inside box, tight Skeet-style padding (5/6px each side to clear 5-stroke band)
+    -- Body inside box, tight Skeet-style padding (6px each side to clear 5-stroke band).
+    -- Y component MUST be 0 here — pairing (1, -12) with AutomaticSize.Y causes
+    -- Roblox to treat the Y scale as a minimum that collapses everything to 0.
     local body = mk("Frame", { Parent = box, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(6, 8), Size = UDim2.new(1, -12, 1, -12),
+        Position = UDim2.fromOffset(6, 8), Size = UDim2.new(1, -12, 0, 0),
         BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y })
     uiList(body, Enum.FillDirection.Vertical, 2)
     -- Top spacer below title (Skeet CustomSpacing(9.f) accounts for title height)
@@ -933,23 +935,28 @@ end
 -- ──────────────────────────────────────────────────────────────────────────
 function Library:CreateWindow(opts)
     opts = opts or {}
-    local W, H = 350, 450
-    if opts.Size then W = opts.Size.X.Offset; H = opts.Size.Y.Offset end
+    -- User base = 350×450. Header (title + tabs) needs +40px → total 350×490.
+    -- Base structure (5-stroke deep, UIPadding 20, Tab frame, GroupBox) is preserved
+    -- verbatim from user's reference; we only ADD a header strip above.
+    local BASE_W, BASE_H = 350, 490
+    if opts.Size then BASE_W = opts.Size.X.Offset; BASE_H = opts.Size.Y.Offset end
+    local HEADER = 40    -- top strip that holds rainbow + title + tab row
 
-    -- ── BASE WINDOW (5-stroke deep border, user-reference colors) ────────
+    -- ── BASE (350×490, RGB 18,18,18, 5 deep strokes) ─────────────────────
     local Window = mk("Frame", { Parent = ScreenGui,
-        Size = UDim2.fromOffset(W, H),
+        Size = UDim2.fromOffset(BASE_W, BASE_H),
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5),
         BackgroundColor3 = Theme.BaseFill,
         BorderSizePixel = 0, Active = true })
     multiStroke(Window, "deep")
 
-    -- Drag handle covers the entire title bar strip above the tab row
+    -- Window drag handle (covers top header strip, including title area)
     local dragging, dragStart, startPos
     local dragLayer = mk("TextButton", { Parent = Window, BackgroundTransparency = 1,
         Text = "", AutoButtonColor = false,
-        Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 18), ZIndex = 2 })
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.new(1, 0, 0, 18), ZIndex = 2 })
     trackConn(dragLayer.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
@@ -970,17 +977,17 @@ function Library:CreateWindow(opts)
            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
     end))
 
-    -- ── UNICORN BAR + SHADOW (user-reference gradient stops) ─────────────
-    -- Shadow strip (1px, half-transparent black), drawn ABOVE the rainbow
-    local rainbowShadow = mk("Frame", { Parent = Window, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(8, 9),
-        Size = UDim2.fromOffset(W - 16, 1),
+    -- ── RAINBOW BAR (exact user-reference positioning) ───────────────────
+    -- Shadow 1px black @ 0.5 transparency at (6, 7)
+    mk("Frame", { Parent = Window, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(6, 7),
+        Size = UDim2.fromOffset(BASE_W - 12, 1),
         BackgroundColor3 = Color3.fromRGB(0, 0, 0),
         BackgroundTransparency = 0.5, ZIndex = 3 })
-    -- Rainbow bar 2px
+    -- Rainbow 2px at (6, 6)
     local rainbow = mk("Frame", { Parent = Window, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(8, 8),
-        Size = UDim2.fromOffset(W - 16, 2),
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.fromOffset(BASE_W - 12, 2),
         BackgroundColor3 = Color3.fromRGB(255, 255, 255), ZIndex = 4 })
     local rainbowGrad = Instance.new("UIGradient"); rainbowGrad.Name = "\0"
     rainbowGrad.Color = ColorSequence.new{
@@ -989,84 +996,83 @@ function Library:CreateWindow(opts)
         ColorSequenceKeypoint.new(1.000, Theme.UCyellow)}
     rainbowGrad.Parent = rainbow
 
-    -- Optional title text on top of dragging strip (left of tabs)
-    local titleLbl = mk("TextLabel", { Parent = Window, BorderSizePixel = 0,
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(10, 12), Size = UDim2.fromOffset(W - 20, 12),
+    -- ── HEADER: title (top-left) + tab row (below title) ─────────────────
+    local titleLbl = mk("TextLabel", { Parent = Window,
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(8, 12),
+        Size = UDim2.fromOffset(BASE_W - 16, 12),
         Text = opts.Title or "skeezt", TextSize = 11, TextColor3 = Theme.Title,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 3 })
     applyFont(titleLbl, true); dropShadowText(titleLbl)
 
-    -- ── LINORIA-STYLE HORIZONTAL TAB ROW ─────────────────────────────────
     local TabRow = mk("Frame", { Parent = Window, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(10, 26),
-        Size = UDim2.new(0, W - 20, 0, 18),
+        Position = UDim2.fromOffset(20, 26),
+        Size = UDim2.new(0, BASE_W - 40, 0, 14),
         BackgroundTransparency = 1, ZIndex = 3 })
-    local tl = uiList(TabRow, Enum.FillDirection.Horizontal, 0)
+    uiList(TabRow, Enum.FillDirection.Horizontal, 14)
 
-    -- ── TAB CONTENT FRAME (5-stroke shallow border) ──────────────────────
-    -- 2px overlap with tab row creates the iconic Skeet "tab attaches to body"
+    -- ── TAB FRAME (user-reference 310×408, positioned at (20, HEADER+20)
+    --     to reproduce the user's padded-inner placement WITHOUT applying a
+    --     UIPadding to Window (which would shift the rainbow/title/tabRow).
     local TabFrame = mk("Frame", { Parent = Window, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(10, 43),
-        Size = UDim2.new(0, W - 20, 0, H - 53),
+        Position = UDim2.fromOffset(20, HEADER + 20),
+        Size = UDim2.fromOffset(BASE_W - 40, BASE_H - HEADER - 40),
         BackgroundColor3 = Theme.TabFill, ZIndex = 2 })
     multiStroke(TabFrame, "shallow")
-    -- Inner content host (padded so groupboxes don't kiss the 5-stroke band)
-    local TabContent = mk("Frame", { Parent = TabFrame, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(6, 6),
-        Size = UDim2.new(1, -12, 1, -12),
-        BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 3 })
 
     local self_ = { _window = Window, _tabs = {}, _activeTab = nil, _tabRow = TabRow }
 
     function self_:AddTab(name)
         local idx = #self_._tabs + 1
 
-        -- Tab button: text-only, horizontal row, Linoria style
+        -- ── Tab button: text-only, no underline (per user) ──────────────
         local tabBtn = mk("TextButton", { Parent = TabRow, BorderSizePixel = 0,
-            Size = UDim2.fromOffset(0, 18), BackgroundColor3 = Theme.BaseFill,
+            Size = UDim2.fromOffset(0, 14), BackgroundTransparency = 1,
             AutoButtonColor = false, AutomaticSize = Enum.AutomaticSize.X,
             Text = "", ZIndex = 3 })
-        local pad = Instance.new("UIPadding"); pad.Name = "\0"
-        pad.PaddingLeft = UDim.new(0, 10); pad.PaddingRight = UDim.new(0, 10)
-        pad.Parent = tabBtn
 
         local nameLbl = mk("TextLabel", { Parent = tabBtn, BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 1, 0), Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.new(0, 0, 1, 0), Position = UDim2.fromOffset(0, 0),
             Text = name or "?", TextSize = 12, TextColor3 = Theme.SubText,
             TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
             AutomaticSize = Enum.AutomaticSize.X, ZIndex = 4 })
         applyFont(nameLbl, true); dropShadowText(nameLbl)
 
-        -- 2px underline (when selected) — rainbow gradient for the Skeet flair
-        local underline = mk("Frame", { Parent = tabBtn, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0, 1),
-            Position = UDim2.new(0, 0, 1, 1), Size = UDim2.new(1, 0, 0, 2),
-            BackgroundColor3 = Theme.Accent, Visible = false, ZIndex = 5 })
-        local ulGrad = Instance.new("UIGradient"); ulGrad.Name = "\0"
-        ulGrad.Color = ColorSequence.new{
-            ColorSequenceKeypoint.new(0,   Theme.UCcyan),
-            ColorSequenceKeypoint.new(0.5, Theme.UCpink),
-            ColorSequenceKeypoint.new(1,   Theme.UCyellow)}
-        ulGrad.Parent = underline
+        -- ── Tab content: 2-column groupbox grid, matches user's GroupBox
+        --     position (20px in from Tab edge) but split into Left + Right.
+        --     Inside Tab frame (310×N), inner area = 310-40 = 270 wide.
+        --     Two columns @ 132 wide with 6px gap between them.
+        local page = mk("Frame", { Parent = TabFrame, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(20, 20),
+            Size = UDim2.new(1, -40, 1, -40),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 3 })
 
-        -- Single-column page (AddLeft + AddRight both stack vertically here)
-        local page = mk("ScrollingFrame", { Parent = TabContent, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(0, 0), Size = UDim2.fromScale(1, 1),
-            BackgroundTransparency = 1, Visible = false,
-            ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.BorderInner,
+        local leftCol = mk("ScrollingFrame", { Parent = page, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.new(0.5, -3, 1, 0),
+            BackgroundTransparency = 1, ScrollBarThickness = 2,
+            ScrollBarImageColor3 = Theme.BorderInner,
             CanvasSize = UDim2.new(0,0,0,0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
-            ScrollingDirection = Enum.ScrollingDirection.Y })
-        uiList(page, Enum.FillDirection.Vertical, 6)
-        uiPad(page, 2, 6, 2, 4)
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 3 })
+        local rightCol = mk("ScrollingFrame", { Parent = page, BorderSizePixel = 0,
+            Position = UDim2.new(0.5, 3, 0, 0),
+            Size = UDim2.new(0.5, -3, 1, 0),
+            BackgroundTransparency = 1, ScrollBarThickness = 2,
+            ScrollBarImageColor3 = Theme.BorderInner,
+            CanvasSize = UDim2.new(0,0,0,0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 3 })
+        uiList(leftCol,  Enum.FillDirection.Vertical, 6)
+        uiList(rightCol, Enum.FillDirection.Vertical, 6)
 
-        local tab = { _page = page, _btn = tabBtn, _name = nameLbl, _underline = underline }
+        local tab = { _page = page, _btn = tabBtn, _name = nameLbl,
+                      _left = leftCol, _right = rightCol }
 
-        function tab:AddLeftGroupbox(nm)  return buildGroupbox(page, nm) end
-        function tab:AddRightGroupbox(nm) return buildGroupbox(page, nm) end
+        function tab:AddLeftGroupbox(nm)  return buildGroupbox(leftCol,  nm) end
+        function tab:AddRightGroupbox(nm) return buildGroupbox(rightCol, nm) end
 
         self_._tabs[idx] = tab
         trackConn(tabBtn.MouseButton1Click:Connect(function() self_:SelectTab(tab) end))
@@ -1078,8 +1084,9 @@ function Library:CreateWindow(opts)
         for _, t in self_._tabs do
             local sel = (t == tab)
             t._page.Visible = sel
-            t._underline.Visible = sel
-            t._name.TextColor3 = sel and Color3.fromRGB(235, 235, 235) or Theme.SubText
+            -- Selected = bright white (full color), unselected = dim subtext.
+            -- NO glow / underline (per user feedback).
+            t._name.TextColor3 = sel and Color3.fromRGB(245, 245, 245) or Theme.SubText
         end
         self_._activeTab = tab
     end
