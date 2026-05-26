@@ -2098,63 +2098,451 @@ function Library:Notify(text, duration)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
--- SHOW LOADER — centered modal shown during script-init (font fetch, etc).
--- main.lua calls Library:ShowLoader({ Title=…, Text=…, … }) before the
--- main window appears.
+-- SHOW LOADER — sanyui-parity loader honoring the full contract:
+--   { Title, Subtitle, ScriptName, GameName, Version, LoadTime, Callback,
+--     Patchnotes = { {Version, Date, Changes={...}}, ... },
+--     Stages = { {progress01, text}, ... },  -- optional
+--     IntroDuration, IntroKey }              -- optional
+--
+-- Layout:
+--   • Left panel (300px): Title / Subtitle, then a Script/Game/Version
+--     metadata box, version label, Load button (or progress + status after
+--     the button is pressed).
+--   • Right panel (only when Patchnotes is non-empty): scrollable changelog,
+--     widening the whole loader from 320 → 580px.
+--
+-- After Load is pressed:
+--   • Button fades out, progress + status replace it.
+--   • Stages advance over LoadTime seconds (default 3s, 6 default stages).
+--   • Entire loader fades out.
+--   • Optional intro: dim + blur + 3 title labels, then fades.
+--   • SafeCallback(config.Callback) — this is what main.lua hangs on; it
+--     builds the actual Window inside that callback.
+--
+-- This call YIELDS until Load is pressed + animations finish, matching
+-- sanyui's contract so the caller can write linear `ShowLoader{…}` → next.
 -- ══════════════════════════════════════════════════════════════════════════
 function Library:ShowLoader(config)
     config = config or {}
-    local titleStr = config.Title or "loading"
-    local textStr  = config.Text  or "Loading…"
+    config.Title       = tostring(config.Title       or "Loader")
+    config.Subtitle    = tostring(config.Subtitle    or "")
+    config.ScriptName  = tostring(config.ScriptName  or "Script")
+    config.GameName    = tostring(config.GameName    or "Game")
+    config.Version     = tostring(config.Version     or "1.0.0")
+    config.LoadTime    = tonumber(config.LoadTime) or 3
+    config.Callback    = config.Callback or function() end
+    config.Patchnotes  = config.Patchnotes or {}
 
     if Library._Loader then
         pcall(function() Library._Loader:Destroy() end)
+        Library._Loader = nil
     end
 
+    local hasPatch = #config.Patchnotes > 0
+    local W = hasPatch and 580 or 320
+    local H = 240
+    local PanelW = 300   -- left panel width (consistent so center column doesn't shift)
+
+    -- Outer frame: WindowBg + 5-stroke OUTER border, centered.
     local loader = mk("Frame", { Parent = ScreenGui,
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(320, 90),
+        Size = UDim2.fromOffset(W, H),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0, ZIndex = 250 })
     applyLayeredStrokes(loader, "outer")
-    -- Rainbow strip at top (same as the main window)
-    mk("Frame", { Parent = loader,
-        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 8),
-        BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
-        BorderSizePixel = 0, ZIndex = 251 })
-    local rb = mk("Frame", { Parent = loader,
+
+    -- Inner Main: TabBg + 5-stroke INNER (matches base watermark/window).
+    local main = mk("Frame", { Parent = loader, ZIndex = 251,
+        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+        Size = UDim2.new(1, -14, 1, -14), Position = UDim2.fromOffset(7, 7) })
+    applyLayeredStrokes(main, "inner")
+
+    -- Rainbow strip at top + 1px shadow underneath (base parity).
+    local rb = mk("Frame", { Parent = main, ZIndex = 252,
         Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
-        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 252 })
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
     rbGrad.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Theme.RainbowA),
+        ColorSequenceKeypoint.new(0,   Theme.RainbowA),
         ColorSequenceKeypoint.new(0.5, Theme.RainbowB),
-        ColorSequenceKeypoint.new(1, Theme.RainbowC),
+        ColorSequenceKeypoint.new(1,   Theme.RainbowC),
     }
     rbGrad.Parent = rb
+    mk("Frame", { Parent = main, ZIndex = 253,
+        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
+        BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
+        BorderSizePixel = 0 })
 
-    mkText("TextLabel", { Parent = loader,
-        Size = UDim2.fromOffset(300, 14), Position = UDim2.fromOffset(10, 20),
-        BackgroundTransparency = 1, Text = titleStr, TextSize = 12,
+    -- ── LEFT PANEL ────────────────────────────────────────────────────────
+    -- Title (bold, centered in left panel)
+    mkText("TextLabel", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(10, 16),
+        Size = UDim2.fromOffset(PanelW - 20, 18),
+        BackgroundTransparency = 1, Text = config.Title, TextSize = 14,
         TextColor3 = Theme.TextActive,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 253,
+        TextXAlignment = Enum.TextXAlignment.Center,
     }, "bold")
-    local body = mkText("TextLabel", { Parent = loader,
-        Size = UDim2.fromOffset(300, 14), Position = UDim2.fromOffset(10, 38),
-        BackgroundTransparency = 1, Text = textStr, TextSize = 11,
+
+    -- Subtitle (dim, underneath the title)
+    mkText("TextLabel", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(10, 36),
+        Size = UDim2.fromOffset(PanelW - 20, 14),
+        BackgroundTransparency = 1, Text = config.Subtitle, TextSize = 11,
+        TextColor3 = Theme.TextDim,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    }, "reg")
+
+    -- Info container — Script/Game rows with separator.
+    local infoBox = mk("Frame", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(14, 60),
+        Size = UDim2.fromOffset(PanelW - 28, 52),
+        BackgroundColor3 = Theme.GroupBg, BorderSizePixel = 0 })
+    applyLayeredStrokes(infoBox, "inner")
+
+    -- Script row
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+        Position = UDim2.fromOffset(8, 4),
+        Size = UDim2.new(0.4, 0, 0, 18),
+        BackgroundTransparency = 1, Text = "Script", TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 253,
     }, "reg")
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+        Position = UDim2.new(0.4, 0, 0, 4),
+        Size = UDim2.new(0.6, -8, 0, 18),
+        BackgroundTransparency = 1, Text = config.ScriptName, TextSize = 11,
+        TextColor3 = Theme.Accent,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    }, "bold")
+
+    -- Mid separator
+    mk("Frame", { Parent = infoBox, ZIndex = 255,
+        Position = UDim2.fromOffset(6, 26),
+        Size = UDim2.new(1, -12, 0, 1),
+        BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
+
+    -- Game row
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+        Position = UDim2.fromOffset(8, 28),
+        Size = UDim2.new(0.4, 0, 0, 18),
+        BackgroundTransparency = 1, Text = "Game", TextSize = 11,
+        TextColor3 = Theme.TextDim,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, "reg")
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+        Position = UDim2.new(0.4, 0, 0, 28),
+        Size = UDim2.new(0.6, -8, 0, 18),
+        BackgroundTransparency = 1, Text = config.GameName, TextSize = 11,
+        TextColor3 = Theme.Accent,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    }, "bold")
+
+    -- Version label below info box
+    mkText("TextLabel", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(10, 120),
+        Size = UDim2.fromOffset(PanelW - 20, 14),
+        BackgroundTransparency = 1, Text = "v" .. config.Version, TextSize = 11,
+        TextColor3 = Theme.TextDim,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    }, "reg")
+
+    -- Load button (will fade out + be replaced by progress + status).
+    local btnOuter = mk("TextButton", { Parent = main, ZIndex = 255,
+        Position = UDim2.fromOffset(14, H - 56),
+        Size = UDim2.fromOffset(PanelW - 28, 22),
+        BackgroundColor3 = Theme.SliderTop, BorderSizePixel = 0,
+        Text = "", AutoButtonColor = false, Active = true })
+    local btnGrad = vGradient(btnOuter, Theme.SliderTop, Theme.SliderBottom)
+    applyLayeredStrokes(btnOuter, "inner")
+    local btnLabel = mkText("TextLabel", { Parent = btnOuter, ZIndex = 256,
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        Text = "Load", TextSize = 12, TextColor3 = Theme.TextActive,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
+    }, "bold")
+    -- Hover swap to brighter gradient
+    btnOuter.MouseEnter:Connect(function()
+        if btnGrad then
+            btnGrad.Color = ColorSequence.new{
+                ColorSequenceKeypoint.new(0, Theme.SliderTopHov),
+                ColorSequenceKeypoint.new(1, Theme.SliderBotHov),
+            }
+        end
+    end)
+    btnOuter.MouseLeave:Connect(function()
+        if btnGrad then
+            btnGrad.Color = ColorSequence.new{
+                ColorSequenceKeypoint.new(0, Theme.SliderTop),
+                ColorSequenceKeypoint.new(1, Theme.SliderBottom),
+            }
+        end
+    end)
+
+    -- Progress bar (hidden until Load is pressed)
+    local progOuter = mk("Frame", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(14, H - 56),
+        Size = UDim2.fromOffset(PanelW - 28, 8),
+        BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0,
+        Visible = false })
+    applyLayeredStrokes(progOuter, "inner")
+    local progFill = mk("Frame", { Parent = progOuter, ZIndex = 255,
+        Position = UDim2.fromOffset(1, 1),
+        Size = UDim2.new(0, 0, 1, -2),
+        BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
+
+    -- Status label below the progress bar
+    local statusLbl = mkText("TextLabel", { Parent = main, ZIndex = 254,
+        Position = UDim2.fromOffset(14, H - 42),
+        Size = UDim2.fromOffset(PanelW - 28, 14),
+        BackgroundTransparency = 1, Text = "", TextSize = 11,
+        TextColor3 = Theme.TextDim, TextTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Visible = false,
+    }, "reg")
+
+    -- ── RIGHT PANEL: PATCHNOTES (only when present) ───────────────────────
+    if hasPatch then
+        -- Vertical separator
+        mk("Frame", { Parent = main, ZIndex = 254,
+            Position = UDim2.fromOffset(PanelW, 14),
+            Size = UDim2.new(0, 1, 1, -28),
+            BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
+
+        -- Changelog header (bold)
+        mkText("TextLabel", { Parent = main, ZIndex = 254,
+            Position = UDim2.fromOffset(PanelW + 12, 16),
+            Size = UDim2.new(1, -(PanelW + 24), 0, 14),
+            BackgroundTransparency = 1, Text = "Changelog", TextSize = 12,
+            TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, "bold")
+        -- Accent underline
+        mk("Frame", { Parent = main, ZIndex = 254,
+            Position = UDim2.fromOffset(PanelW + 12, 32),
+            Size = UDim2.new(1, -(PanelW + 24), 0, 1),
+            BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
+
+        -- Scrollable list
+        local scroll = mk("ScrollingFrame", { Parent = main, ZIndex = 254,
+            Position = UDim2.fromOffset(PanelW + 12, 38),
+            Size = UDim2.new(1, -(PanelW + 24), 1, -54),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = Theme.Accent,
+            CanvasSize = UDim2.fromOffset(0, 0),
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+        })
+        local layout = listLayout(scroll, Enum.FillDirection.Vertical, 8)
+
+        for i, note in ipairs(config.Patchnotes) do
+            local changes = note.Changes or note.changes or {}
+            local version = tostring(note.Version or note.version or "v?")
+            local date    = tostring(note.Date    or note.date    or "")
+            -- Per-entry height: 14 header + (n * 13) lines
+            local entryH = 14 + #changes * 13 + 2
+            local entry = mk("Frame", { Parent = scroll, ZIndex = 255,
+                Size = UDim2.new(1, -6, 0, entryH), LayoutOrder = i,
+                BackgroundTransparency = 1, BorderSizePixel = 0 })
+            mkText("TextLabel", { Parent = entry, ZIndex = 256,
+                Size = UDim2.fromOffset(90, 13),
+                BackgroundTransparency = 1, Text = version, TextSize = 11,
+                TextColor3 = Theme.Accent,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, "bold")
+            mkText("TextLabel", { Parent = entry, ZIndex = 256,
+                Position = UDim2.fromOffset(92, 0),
+                Size = UDim2.new(1, -92, 0, 13),
+                BackgroundTransparency = 1, Text = date, TextSize = 10,
+                TextColor3 = Color3.fromRGB(80, 80, 80),
+                TextXAlignment = Enum.TextXAlignment.Right,
+            }, "reg")
+            local y = 15
+            for _, change in ipairs(changes) do
+                mkText("TextLabel", { Parent = entry, ZIndex = 256,
+                    Position = UDim2.fromOffset(0, y),
+                    Size = UDim2.new(1, 0, 0, 12),
+                    BackgroundTransparency = 1,
+                    Text = "• " .. tostring(change), TextSize = 10,
+                    TextColor3 = Theme.TextDim,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                }, "reg")
+                y = y + 13
+            end
+        end
+
+        -- Keep CanvasSize in sync with content
+        track(layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+        end))
+    end
 
     Library._Loader = loader
 
-    return {
-        SetText = function(_, s) body.Text = tostring(s or "") end,
-        Close   = function() pcall(function() loader:Destroy() end)
-                  Library._Loader = nil end,
-    }
+    -- ── LOAD CLICK → PROGRESS → CALLBACK ──────────────────────────────────
+    -- Block calling thread until Load is clicked AND progress + fade-out are done.
+    local resume = Instance.new("BindableEvent")
+    local loading = false
+
+    btnOuter.MouseButton1Click:Connect(function()
+        if loading then return end
+        loading = true
+
+        -- Fade out the button
+        pcall(function()
+            TweenService:Create(btnOuter, TweenInfo.new(0.18, Enum.EasingStyle.Quad), {
+                BackgroundTransparency = 1,
+            }):Play()
+            TweenService:Create(btnLabel, TweenInfo.new(0.18, Enum.EasingStyle.Quad), {
+                TextTransparency = 1,
+            }):Play()
+        end)
+        task.wait(0.2)
+        btnOuter.Visible = false
+
+        -- Reveal progress + status
+        progOuter.Visible = true
+        statusLbl.Visible = true
+        pcall(function()
+            TweenService:Create(statusLbl, TweenInfo.new(0.25), {
+                TextTransparency = 0,
+            }):Play()
+        end)
+
+        local stages = config.Stages or {
+            { 0.15, "Initializing..." },
+            { 0.35, "Loading modules..." },
+            { 0.55, "Setting up hooks..." },
+            { 0.75, "Preparing UI..." },
+            { 0.90, "Finalizing..." },
+            { 1.00, "Done!" },
+        }
+        local stageTime = config.LoadTime / #stages
+        local fillWidth = progOuter.AbsoluteSize.X - 2
+        if fillWidth < 1 then fillWidth = PanelW - 30 end
+
+        for _, st in ipairs(stages) do
+            statusLbl.Text = tostring(st[2] or "")
+            pcall(function()
+                TweenService:Create(progFill,
+                    TweenInfo.new(stageTime * 0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    { Size = UDim2.new(st[1], 0, 1, -2) }
+                ):Play()
+            end)
+            task.wait(stageTime)
+        end
+        task.wait(0.25)
+
+        -- Fade loader out
+        pcall(function()
+            for _, d in ipairs(loader:GetDescendants()) do
+                if d:IsA("Frame") or d:IsA("TextButton") or d:IsA("ScrollingFrame") then
+                    if d.BackgroundTransparency < 1 then
+                        pcall(function()
+                            TweenService:Create(d, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+                        end)
+                    end
+                elseif d:IsA("TextLabel") then
+                    pcall(function()
+                        TweenService:Create(d, TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
+                    end)
+                elseif d:IsA("UIStroke") then
+                    pcall(function()
+                        TweenService:Create(d, TweenInfo.new(0.3), { Transparency = 1 }):Play()
+                    end)
+                end
+            end
+            TweenService:Create(loader, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+        end)
+        task.wait(0.35)
+        pcall(function() loader:Destroy() end)
+        Library._Loader = nil
+
+        resume:Fire()
+    end)
+
+    -- Yield until the user clicks Load + animations finish
+    resume.Event:Wait()
+    resume:Destroy()
+
+    -- ── INTRO (optional cinematic before Callback runs) ───────────────────
+    do
+        local introInfo = TweenInfo.new(0.9, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
+        local tint = mk("Frame", { Parent = ScreenGui, ZIndex = 240,
+            Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
+            BorderSizePixel = 0 })
+        local blur
+        pcall(function()
+            blur = Instance.new("BlurEffect")
+            blur.Size = 0
+            blur.Parent = game:GetService("Lighting")
+        end)
+
+        local function introLabel(text, yOff, color, size)
+            local l = mkText("TextLabel", { Parent = tint, ZIndex = 241,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, yOff),
+                Size = UDim2.fromOffset(440, size + 6),
+                BackgroundTransparency = 1, Text = text, TextSize = size,
+                TextColor3 = color, TextTransparency = 1,
+                TextXAlignment = Enum.TextXAlignment.Center,
+                TextYAlignment = Enum.TextYAlignment.Center,
+            }, "bold")
+            local stroke
+            for _, c in ipairs(l:GetChildren()) do
+                if c:IsA("UIStroke") then stroke = c; stroke.Transparency = 1; break end
+            end
+            return l, stroke
+        end
+
+        local l1, s1 = introLabel(config.Title, -22, Color3.fromRGB(235, 235, 235), 16)
+        local l2, s2 = introLabel(config.ScriptName .. " loaded", 0, Theme.Accent, 13)
+        local l3, s3 = introLabel("press " .. (config.IntroKey or "End") ..
+            " to show/hide menu", 22, Color3.fromRGB(135, 135, 135), 11)
+
+        pcall(function()
+            TweenService:Create(tint, introInfo, { BackgroundTransparency = 0.55 }):Play()
+            if blur then TweenService:Create(blur, introInfo, { Size = 20 }):Play() end
+            local labels = { {l1, s1, 0}, {l2, s2, 0.08}, {l3, s3, 0.16} }
+            for _, e in ipairs(labels) do
+                task.delay(e[3], function()
+                    pcall(function()
+                        TweenService:Create(e[1], introInfo, { TextTransparency = 0 }):Play()
+                        if e[2] then
+                            TweenService:Create(e[2], introInfo, { Transparency = 0 }):Play()
+                        end
+                    end)
+                end)
+            end
+        end)
+        task.wait(0.9 + (tonumber(config.IntroDuration) or 1.2))
+
+        pcall(function()
+            for _, l in ipairs({ l1, l2, l3 }) do
+                pcall(function()
+                    TweenService:Create(l, introInfo, { TextTransparency = 1 }):Play()
+                end)
+            end
+            for _, s in ipairs({ s1, s2, s3 }) do
+                if s then
+                    pcall(function()
+                        TweenService:Create(s, introInfo, { Transparency = 1 }):Play()
+                    end)
+                end
+            end
+            TweenService:Create(tint, introInfo, { BackgroundTransparency = 1 }):Play()
+            if blur then TweenService:Create(blur, introInfo, { Size = 0 }):Play() end
+        end)
+        task.delay(1.0, function()
+            pcall(function() tint:Destroy() end)
+            if blur then pcall(function() blur:Destroy() end) end
+        end)
+        -- Overlap intro fade with UI creation
+        task.wait(0.35)
+    end
+
+    -- Fire the caller's UI-build callback
+    Library:SafeCallback(config.Callback)
 end
 
 function Library:HideLoader()
