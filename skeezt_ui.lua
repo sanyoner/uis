@@ -338,6 +338,39 @@ local function measureText(str, size, kind)
     return math.ceil(#str * size * mult), size + 2
 end
 
+-- Wraps a widget table so it exposes `:OnChanged(cb)` and fires every
+-- registered listener whenever SetValue runs (unless `supp=true` is passed).
+-- Drop-in for sanyui parity — SaveManager / ESPPreview / per-feature code in
+-- main.lua all chain `Toggles.X:OnChanged(...)` after registration.
+local function withOnChanged(widget)
+    widget._listeners = widget._listeners or {}
+    local origSetValue = widget.SetValue
+    widget.SetValue = function(self, v, supp, ...)
+        origSetValue(self, v, supp, ...)
+        if not supp then
+            for _, cb in ipairs(self._listeners) do pcall(cb, self.Value) end
+        end
+    end
+    -- ColorPicker exposes a second setter for the SaveManager (RGB + alpha).
+    -- Fire listeners after that path too so config-load handlers run.
+    if widget.SetValueRGB then
+        local origRGB = widget.SetValueRGB
+        widget.SetValueRGB = function(self, c, t, supp)
+            origRGB(self, c, t)
+            if not supp then
+                for _, cb in ipairs(self._listeners) do pcall(cb, self.Value) end
+            end
+        end
+    end
+    function widget:OnChanged(cb)
+        if type(cb) == "function" then
+            self._listeners[#self._listeners + 1] = cb
+        end
+        return self
+    end
+    return widget
+end
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- LIBRARY ROOT + SCREENGUI
 -- ══════════════════════════════════════════════════════════════════════════
@@ -490,13 +523,18 @@ local function attachWidgets(target, body)
             if not toggle.Value then lbl.TextColor3 = Theme.TextDim end
         end))
 
-        Library.Toggles[id] = toggle
+        Library.Toggles[id] = withOnChanged(toggle)
 
         local chain = {}
         function chain:AddColorPicker(cpid, cpopt)
             return target._addColorPickerInline(row, cpid, cpopt)
         end
         function chain:AddKeyPicker(kpid, kpopt)
+            kpopt = kpopt or {}
+            -- SyncToggleState=true makes the keypicker's "Toggle"-mode flip
+            -- drive THIS parent toggle's value (sanyui parity, used by TP
+            -- key + other one-key-one-toggle bindings).
+            if kpopt.SyncToggleState then kpopt._parentToggle = toggle end
             return target._addKeyPickerInline(row, kpid, kpopt)
         end
         return chain
@@ -671,7 +709,7 @@ local function attachWidgets(target, body)
                or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
         end))
 
-        Library.Options[id] = slider
+        Library.Options[id] = withOnChanged(slider)
         return slider
     end
 
@@ -784,7 +822,10 @@ local function attachWidgets(target, body)
             end
         end
         local function refreshRows() for v, r in pairs(rows) do applyRowVisual(v, r) end end
-        for _, v in ipairs(values) do
+
+        -- Row builder extracted so :SetValues can rebuild dynamically (used by
+        -- SaveManager to refresh the config-list dropdown after Save/Delete).
+        local function addRow(v)
             local item = mkText("TextButton", { Parent = scroll,
                 Size = UDim2.new(1, -4, 0, 16),
                 BackgroundColor3 = Theme.HoverBg, BackgroundTransparency = 1,
@@ -815,7 +856,20 @@ local function attachWidgets(target, body)
                 refreshRows()
             end))
         end
+        for _, v in ipairs(values) do addRow(v) end
         refreshRows()
+
+        -- SaveManager parity: replaces the dropdown's value list at runtime
+        -- (config-list rebuilds after Create/Delete) and clears the current
+        -- selection so the caller can drive a fresh pick via SetValue.
+        function dd:SetValues(newValues)
+            for _, item in pairs(rows) do pcall(function() item:Destroy() end) end
+            for k in pairs(rows) do rows[k] = nil end
+            values = newValues or {}
+            self.Values = values
+            for _, v in ipairs(values) do addRow(v) end
+            refreshRows()
+        end
 
         local function openPopup()
             closeActivePopup()
@@ -840,7 +894,7 @@ local function attachWidgets(target, body)
             else openPopup() end
         end))
 
-        Library.Options[id] = dd
+        Library.Options[id] = withOnChanged(dd)
         return dd
     end
 
@@ -1024,7 +1078,7 @@ local function attachWidgets(target, body)
             else openPopup() end
         end))
 
-        Library.Options[id] = cp
+        Library.Options[id] = withOnChanged(cp)
         return cp
     end
     function target:AddColorPicker(id, opt) return buildColorPicker(nil, id, opt, false) end
@@ -1050,9 +1104,18 @@ local function attachWidgets(target, body)
         local defaultKey  = opt.Default or "None"
         local defaultMode = opt.Mode    or "Toggle"
         local modesList   = opt.Modes   or KEY_MODES_DEFAULT
+        local parentToggle = opt._parentToggle  -- set by AddToggle chain on SyncToggleState
+
+        -- SyncToggleState locks the keypicker into "Toggle" mode and binds its
+        -- _toggleState directly to the parent toggle's Value. sanyui parity.
+        if parentToggle then
+            defaultMode = "Toggle"
+            modesList = { "Toggle" }
+        end
 
         local kp = { Value = defaultKey, Mode = defaultMode,
-                     Callback = opt.Callback, _toggleState = false }
+                     Callback = opt.Callback, _toggleState = false,
+                     _parentToggle = parentToggle }
 
         local function bracketText(k)
             if not k or k == "" or k == "None" then return "[-]" end
@@ -1065,7 +1128,7 @@ local function attachWidgets(target, body)
             picker = mkText("TextButton", { Parent = parentRow,
                 AnchorPoint = Vector2.new(1, 0.5),
                 Position = UDim2.new(1, -2, 0.5, 0),
-                Size = UDim2.fromOffset(40, 7),
+                Size = UDim2.fromOffset(40, 2),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
                 Text = bracketText(defaultKey), TextSize = 7,
                 TextColor3 = Theme.TextDim, AutoButtonColor = false,
@@ -1086,7 +1149,7 @@ local function attachWidgets(target, body)
             picker = mkText("TextButton", { Parent = row,
                 AnchorPoint = Vector2.new(1, 0.5),
                 Position = UDim2.new(1, -2, 0.5, 0),
-                Size = UDim2.fromOffset(40, 7),
+                Size = UDim2.fromOffset(40, 2),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
                 Text = bracketText(defaultKey), TextSize = 7,
                 TextColor3 = Theme.TextDim, AutoButtonColor = false,
@@ -1123,6 +1186,8 @@ local function attachWidgets(target, body)
         kp:SetValue({ defaultKey, defaultMode }, true)
 
         function kp:GetState()
+            -- With SyncToggleState, the parent toggle IS the truth source.
+            if self._parentToggle then return self._parentToggle.Value and true or false end
             if self.Mode == "Always" then return true end
             if self.Mode == "Off"    then return false end
             if self.Mode == "Toggle" then return self._toggleState and true or false end
@@ -1149,12 +1214,26 @@ local function attachWidgets(target, body)
             end
             if not match then return end
             if kp.Mode == "Toggle" then
-                kp._toggleState = not kp._toggleState
-                refreshColor(kp._toggleState)
+                if kp._parentToggle then
+                    -- SyncToggleState: flip the parent toggle, parent's
+                    -- OnChanged below repaints the keypicker.
+                    kp._parentToggle:SetValue(not kp._parentToggle.Value)
+                else
+                    kp._toggleState = not kp._toggleState
+                    refreshColor(kp._toggleState)
+                end
             elseif kp.Mode == "Hold" then
                 refreshColor(true)
             end
         end))
+
+        -- SyncToggleState wire-up: parent's value drives keypicker color.
+        if parentToggle and parentToggle.OnChanged then
+            parentToggle:OnChanged(function(v)
+                refreshColor(v and true or false)
+            end)
+            refreshColor(parentToggle.Value and true or false)
+        end
         track(UserInputService.InputEnded:Connect(function(input)
             if kp.Mode ~= "Hold" then return end
             local v = kp.Value
@@ -1253,7 +1332,7 @@ local function attachWidgets(target, body)
         end))
         track(picker.MouseLeave:Connect(function() refreshColor(kp._toggleState) end))
 
-        Library.Options[id] = kp
+        Library.Options[id] = withOnChanged(kp)
         return kp
     end
     function target:AddKeyPicker(id, opt) return buildKeyPicker(nil, id, opt, false) end
@@ -1311,7 +1390,7 @@ local function attachWidgets(target, body)
             safeCallback(input.Callback, input.Value)
         end))
 
-        Library.Options[id] = input
+        Library.Options[id] = withOnChanged(input)
         return input
     end
 
@@ -2101,6 +2180,267 @@ local watermarkLbl = mkText("TextLabel", { Parent = Watermark,
     TextYAlignment = Enum.TextYAlignment.Center,
     ZIndex = 191,
 }, "bold")
+-- ══════════════════════════════════════════════════════════════════════════
+-- KEYBIND HUD — draggable on-screen panel that auto-shows every KeyPicker's
+-- current "[KEY] Name (Mode)" status while the bind is active. main.lua
+-- toggles its visibility via `Library.KeybindFrame.Visible = bool`; sanyui
+-- parity lets feature code register/unregister ContainerLabels here at
+-- KeyPicker construction time (we expose the parent via .KeybindContainer).
+-- ══════════════════════════════════════════════════════════════════════════
+local KeybindFrame = mk("Frame", { Parent = ScreenGui,
+    AnchorPoint = Vector2.new(0, 0.5),
+    Position = UDim2.new(0, 14, 0.5, 0),
+    Size = UDim2.fromOffset(150, 24),
+    BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+    AutomaticSize = Enum.AutomaticSize.Y, Visible = true,
+    ZIndex = 180, Active = true })
+applyLayeredStrokes(KeybindFrame, "inner")
+uipad(KeybindFrame, 4)
+listLayout(KeybindFrame, Enum.FillDirection.Vertical, 1)
+
+local KeybindTitle = mkText("TextLabel", { Parent = KeybindFrame,
+    Size = UDim2.new(1, 0, 0, 12), BackgroundTransparency = 1,
+    Text = "keybinds", TextSize = 11, TextColor3 = Theme.TextActive,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Center,
+    LayoutOrder = 0, ZIndex = 181 }, "bold")
+
+-- Drag the HUD from anywhere on its surface (the title strip is too small
+-- to grab reliably on a 1-line bind list).
+do
+    local dragging, dragStart, startPos
+    track(KeybindFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = KeybindFrame.Position
+        end
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+           or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            KeybindFrame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+    track(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end))
+end
+
+Library.KeybindFrame     = KeybindFrame
+Library.KeybindContainer = KeybindFrame   -- sanyui alias
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- BUILD FONT SECTION — drop a font-picker dropdown into the caller's
+-- container (typically Settings tab Menu groupbox). Pulls names from
+-- Library.Fonts (populated by RegisterFontsFromRepo) and calls
+-- Library:SetFont on change.
+-- ══════════════════════════════════════════════════════════════════════════
+function Library:BuildFontSection(container)
+    if not container or type(container.AddDropdown) ~= "function" then return end
+
+    -- main.lua RegisterFontsFromRepo runs ASYNC for github downloads; the
+    -- dropdown is built BEFORE all entries have populated Library.Fonts.
+    -- Snapshot what's loaded now + always include "Default" as a sentinel
+    -- that reverts to FONT_REG.
+    local names = { "Default" }
+    for n in pairs(self.Fonts or {}) do names[#names + 1] = n end
+    table.sort(names, function(a, b)
+        if a == "Default" then return true end
+        if b == "Default" then return false end
+        return a < b
+    end)
+
+    container:AddDropdown('LibraryFont', {
+        Text = 'Font',
+        Values = names,
+        Default = "Default",
+        Callback = function(v)
+            if v == "Default" or v == nil then
+                self:SetFont(nil)
+            elseif self.Fonts[v] then
+                self:SetFont(v)
+            end
+        end,
+    })
+
+    -- Re-populate the dropdown whenever a new font finishes loading, so an
+    -- async-registered font becomes pickable without a script reload. We
+    -- watch Library.Fonts via a simple poll (cheap — 1 Hz, only checks
+    -- table size). RegisterFontsFromRepo doesn't fire an event, so polling
+    -- is the simplest catch-all without instrumenting the loader.
+    local lastCount = #names
+    track(RunService.Heartbeat:Connect(function()
+        local n = 0; for _ in pairs(self.Fonts or {}) do n = n + 1 end
+        n = n + 1   -- "Default"
+        if n ~= lastCount and Library.Options.LibraryFont then
+            lastCount = n
+            local updated = { "Default" }
+            for k in pairs(self.Fonts or {}) do updated[#updated + 1] = k end
+            table.sort(updated, function(a, b)
+                if a == "Default" then return true end
+                if b == "Default" then return false end
+                return a < b
+            end)
+            pcall(Library.Options.LibraryFont.SetValues, Library.Options.LibraryFont, updated)
+        end
+    end))
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- PLACEHOLDER BOX — draggable container the host script fills at runtime
+-- (Spectator list, killfeed, custom HUD). main.lua usage (Spectator List):
+--     local box = Library:CreatePlaceholderBox{ Title = "SPECTATORS", Width = 200 }
+--     box:AddLabel("- " .. name) → handle { SetText / SetColor / Remove }
+--     box:Clear(); box:SetVisible(bool); box:SetTitle(text); box:Destroy()
+-- Visibility rule: shown when (user-enabled) AND (has labels OR menu open).
+-- Empty + menu-closed → hidden so unused HUDs don't clutter in-game.
+-- ══════════════════════════════════════════════════════════════════════════
+Library._phSpawnCount = 0
+function Library:CreatePlaceholderBox(config)
+    config = config or {}
+    local title = config.Title
+    local width = config.Width or 200
+    local labelSize = config.LabelSize or 14
+
+    -- Auto-stack vertically when caller doesn't pass Position — matches sanyui
+    -- behavior so multiple Spectator/Movement/etc boxes don't overlap.
+    local position = config.Position
+    if not position then
+        local idx = Library._phSpawnCount
+        Library._phSpawnCount = idx + 1
+        position = UDim2.new(1, -(width + 30), 0, 50 + idx * 120)
+    end
+
+    -- Outer with 5-stroke layered border + inner Main (matches the watermark
+    -- visual). AutomaticSize.Y so box height tracks its label count.
+    local outer = mk("Frame", { Parent = ScreenGui,
+        Position = position, Size = UDim2.fromOffset(width, 32),
+        BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 195, Active = true })
+    applyLayeredStrokes(outer, "outer")
+
+    local main = mk("Frame", { Parent = outer,
+        Size = UDim2.new(1, -2, 1, -2),
+        Position = UDim2.fromOffset(1, 1),
+        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 196 })
+    applyLayeredStrokes(main, "inner")
+
+    local titleLbl
+    local headerOffset = 4
+    if title then
+        titleLbl = mkText("TextLabel", { Parent = main,
+            Position = UDim2.fromOffset(8, 4),
+            Size = UDim2.new(1, -16, 0, 14),
+            BackgroundTransparency = 1, Text = tostring(title),
+            TextSize = 11, TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            ZIndex = 197 }, "bold")
+        headerOffset = 22
+    end
+
+    -- Content area — labels stack vertically, AutomaticSize drives main → outer.
+    local content = mk("Frame", { Parent = main,
+        Position = UDim2.fromOffset(8, headerOffset),
+        Size = UDim2.new(1, -16, 0, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 197 })
+    listLayout(content, Enum.FillDirection.Vertical, 1)
+    mk("UIPadding", { Parent = content, PaddingBottom = UDim.new(0, 4) })
+
+    -- Drag from anywhere on the outer surface.
+    do
+        local dragging, dragStart, startPos
+        track(outer.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+               or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true; dragStart = input.Position; startPos = outer.Position
+            end
+        end))
+        track(UserInputService.InputChanged:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+               or input.UserInputType == Enum.UserInputType.Touch then
+                local delta = input.Position - dragStart
+                outer.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + delta.X,
+                    startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            end
+        end))
+        track(UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+               or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+        end))
+    end
+
+    local labels = {}
+    local box = {
+        Frame = outer, Content = content,
+        _labels = labels,
+        _userVisible = false,
+    }
+
+    local function refreshVisibility()
+        local hasLabels = #labels > 0
+        local menuOpen = Library.Visible
+        outer.Visible = box._userVisible and (hasLabels or menuOpen)
+    end
+
+    function box:AddLabel(text, color)
+        local lbl = mkText("TextLabel", { Parent = content,
+            Size = UDim2.new(1, 0, 0, labelSize),
+            BackgroundTransparency = 1,
+            Text = tostring(text or ""), TextSize = 11,
+            TextColor3 = color or Theme.Text,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 198,
+        }, "reg")
+        labels[#labels + 1] = lbl
+        refreshVisibility()
+        local handle = { _lbl = lbl }
+        function handle:SetText(t) if lbl and lbl.Parent then lbl.Text = tostring(t or "") end end
+        function handle:SetColor(c) if lbl and lbl.Parent then lbl.TextColor3 = c end end
+        function handle:Remove()
+            for i, l in ipairs(labels) do
+                if l == lbl then table.remove(labels, i); break end
+            end
+            pcall(function() lbl:Destroy() end)
+            refreshVisibility()
+        end
+        return handle
+    end
+
+    function box:Clear()
+        for _, lbl in ipairs(labels) do pcall(function() lbl:Destroy() end) end
+        for i = #labels, 1, -1 do labels[i] = nil end
+        refreshVisibility()
+    end
+
+    function box:SetVisible(v)
+        box._userVisible = v and true or false
+        refreshVisibility()
+    end
+
+    function box:SetTitle(t)
+        if titleLbl then
+            titleLbl.Text = tostring(t or "")
+        end
+    end
+
+    function box:Destroy()
+        pcall(function() outer:Destroy() end)
+    end
+
+    return box
+end
+
 function Library:SetWatermark(text)
     watermarkLbl.Text = tostring(text or "")
     Watermark.Visible = (text ~= nil and text ~= "")
