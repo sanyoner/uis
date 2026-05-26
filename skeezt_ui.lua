@@ -391,6 +391,20 @@ local Library = {
     },
 }
 
+-- sanyui parity: main.lua + addons (SaveManager / ESPPreview / feature code)
+-- read widget state via bare `Toggles.X` / `Options.X` globals (no Library
+-- prefix). sanyui.lua exports them at line 23-24; without these the first
+-- unguarded `Toggles.X` access throws nil-index and halts construction
+-- mid-tab. Bound to Library.Toggles/Library.Options so AddToggle/AddSlider/
+-- AddDropdown writes are immediately visible through the globals.
+if type(getgenv) == "function" then
+    local ok, env = pcall(getgenv)
+    if ok and type(env) == "table" then
+        env.Toggles = Library.Toggles
+        env.Options = Library.Options
+    end
+end
+
 local function getContainer()
     local okH, hui = pcall(function() if type(gethui) == "function" then return gethui() end end)
     if okH and hui then return hui end
@@ -2139,11 +2153,18 @@ function Library:ShowLoader(config)
     end
 
     local hasPatch = #config.Patchnotes > 0
+    -- Match Window's padding cadence: rainbow at (6,6) directly on outer +
+    -- Content frame inset at (20, 36) like CreateWindow does. Loader height
+    -- bumped to 260 so the inner Content has the same headroom as Window's
+    -- tab area (36px) + a comfortable bottom margin.
     local W = hasPatch and 580 or 320
-    local H = 240
-    local PanelW = 300   -- left panel width (consistent so center column doesn't shift)
+    local H = 260
+    -- Inside-Content layout offsets (relative to the inner Content frame).
+    -- LeftPanelW = the "main" column with title-info-button when patchnotes
+    -- are present; sits at left of Content, separator at x=LeftPanelW.
+    local LeftPanelW = hasPatch and 280 or nil
 
-    -- Outer frame: WindowBg + 5-stroke OUTER border, centered.
+    -- Outer frame: WindowBg + 5-stroke OUTER border, centered (Window parity).
     local loader = mk("Frame", { Parent = ScreenGui,
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5),
@@ -2151,14 +2172,9 @@ function Library:ShowLoader(config)
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0, ZIndex = 250 })
     applyLayeredStrokes(loader, "outer")
 
-    -- Inner Main: TabBg + 5-stroke INNER (matches base watermark/window).
-    local main = mk("Frame", { Parent = loader, ZIndex = 251,
-        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
-        Size = UDim2.new(1, -14, 1, -14), Position = UDim2.fromOffset(7, 7) })
-    applyLayeredStrokes(main, "inner")
-
-    -- Rainbow strip at top + 1px shadow underneath (base parity).
-    local rb = mk("Frame", { Parent = main, ZIndex = 252,
+    -- Rainbow strip at Y=6 directly on outer (same as CreateWindow), with
+    -- the 1px black shadow at Y=7 overlapping the rainbow's bottom row.
+    local rb = mk("Frame", { Parent = loader, ZIndex = 252,
         Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
@@ -2168,46 +2184,58 @@ function Library:ShowLoader(config)
         ColorSequenceKeypoint.new(1,   Theme.RainbowC),
     }
     rbGrad.Parent = rb
-    mk("Frame", { Parent = main, ZIndex = 253,
+    mk("Frame", { Parent = loader, ZIndex = 253,
         Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
         BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
         BorderSizePixel = 0 })
 
-    -- ── LEFT PANEL ────────────────────────────────────────────────────────
-    -- Title (bold, centered in left panel)
-    mkText("TextLabel", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(10, 16),
-        Size = UDim2.fromOffset(PanelW - 20, 18),
+    -- Header area — title + subtitle sit between the rainbow and the Content
+    -- frame (where CreateWindow's tab bar lives at Y=14).
+    mkText("TextLabel", { Parent = loader, ZIndex = 254,
+        Position = UDim2.fromOffset(20, 14),
+        Size = UDim2.new(1, -40, 0, 16),
         BackgroundTransparency = 1, Text = config.Title, TextSize = 14,
         TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, "bold")
-
-    -- Subtitle (dim, underneath the title)
-    mkText("TextLabel", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(10, 36),
-        Size = UDim2.fromOffset(PanelW - 20, 14),
+    mkText("TextLabel", { Parent = loader, ZIndex = 254,
+        Position = UDim2.fromOffset(20, 30),
+        Size = UDim2.new(1, -40, 0, 12),
         BackgroundTransparency = 1, Text = config.Subtitle, TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, "reg")
 
-    -- Info container — Script/Game rows with separator.
-    local infoBox = mk("Frame", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(14, 60),
-        Size = UDim2.fromOffset(PanelW - 28, 52),
+    -- Content frame — exact Window parity: 20px horiz gutter, 46px top
+    -- (4 more than Window since the loader doesn't have a tab bar but does
+    -- have title+subtitle), 20px bottom. Inner 5-stroke border + TabBg fill.
+    local Content = mk("Frame", { Parent = loader, ZIndex = 254,
+        Position = UDim2.fromOffset(20, 46),
+        Size = UDim2.new(1, -40, 1, -66),
+        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0 })
+    applyLayeredStrokes(Content, "inner")
+
+    -- Inside-Content widths/positions are now relative to Content (not loader).
+    local CW = W - 40  -- inner content width
+    local CH = H - 66  -- inner content height
+    local L  = hasPatch and LeftPanelW or CW
+
+    -- Info container — Script/Game rows with separator (sits in the left panel).
+    local infoBox = mk("Frame", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(14, 14),
+        Size = UDim2.fromOffset(L - 28, 52),
         BackgroundColor3 = Theme.GroupBg, BorderSizePixel = 0 })
     applyLayeredStrokes(infoBox, "inner")
 
     -- Script row
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
         Position = UDim2.fromOffset(8, 4),
         Size = UDim2.new(0.4, 0, 0, 18),
         BackgroundTransparency = 1, Text = "Script", TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, "reg")
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
         Position = UDim2.new(0.4, 0, 0, 4),
         Size = UDim2.new(0.6, -8, 0, 18),
         BackgroundTransparency = 1, Text = config.ScriptName, TextSize = 11,
@@ -2216,20 +2244,20 @@ function Library:ShowLoader(config)
     }, "bold")
 
     -- Mid separator
-    mk("Frame", { Parent = infoBox, ZIndex = 255,
+    mk("Frame", { Parent = infoBox, ZIndex = 256,
         Position = UDim2.fromOffset(6, 26),
         Size = UDim2.new(1, -12, 0, 1),
         BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
 
     -- Game row
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
         Position = UDim2.fromOffset(8, 28),
         Size = UDim2.new(0.4, 0, 0, 18),
         BackgroundTransparency = 1, Text = "Game", TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, "reg")
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 255,
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
         Position = UDim2.new(0.4, 0, 0, 28),
         Size = UDim2.new(0.6, -8, 0, 18),
         BackgroundTransparency = 1, Text = config.GameName, TextSize = 11,
@@ -2237,19 +2265,19 @@ function Library:ShowLoader(config)
         TextXAlignment = Enum.TextXAlignment.Right,
     }, "bold")
 
-    -- Version label below info box
-    mkText("TextLabel", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(10, 120),
-        Size = UDim2.fromOffset(PanelW - 20, 14),
+    -- Version label
+    mkText("TextLabel", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(14, 76),
+        Size = UDim2.fromOffset(L - 28, 14),
         BackgroundTransparency = 1, Text = "v" .. config.Version, TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, "reg")
 
-    -- Load button (will fade out + be replaced by progress + status).
-    local btnOuter = mk("TextButton", { Parent = main, ZIndex = 255,
-        Position = UDim2.fromOffset(14, H - 56),
-        Size = UDim2.fromOffset(PanelW - 28, 22),
+    -- Load button (sits near the bottom of Content, in the left panel).
+    local btnOuter = mk("TextButton", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(14, CH - 36),
+        Size = UDim2.fromOffset(L - 28, 22),
         BackgroundColor3 = Theme.SliderTop, BorderSizePixel = 0,
         Text = "", AutoButtonColor = false, Active = true })
     local btnGrad = vGradient(btnOuter, Theme.SliderTop, Theme.SliderBottom)
@@ -2278,22 +2306,22 @@ function Library:ShowLoader(config)
         end
     end)
 
-    -- Progress bar (hidden until Load is pressed)
-    local progOuter = mk("Frame", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(14, H - 56),
-        Size = UDim2.fromOffset(PanelW - 28, 8),
+    -- Progress bar (hidden until Load is pressed) — sits at the button's slot.
+    local progOuter = mk("Frame", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(14, CH - 36),
+        Size = UDim2.fromOffset(L - 28, 8),
         BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0,
         Visible = false })
     applyLayeredStrokes(progOuter, "inner")
-    local progFill = mk("Frame", { Parent = progOuter, ZIndex = 255,
+    local progFill = mk("Frame", { Parent = progOuter, ZIndex = 256,
         Position = UDim2.fromOffset(1, 1),
         Size = UDim2.new(0, 0, 1, -2),
         BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
 
     -- Status label below the progress bar
-    local statusLbl = mkText("TextLabel", { Parent = main, ZIndex = 254,
-        Position = UDim2.fromOffset(14, H - 42),
-        Size = UDim2.fromOffset(PanelW - 28, 14),
+    local statusLbl = mkText("TextLabel", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(14, CH - 22),
+        Size = UDim2.fromOffset(L - 28, 12),
         BackgroundTransparency = 1, Text = "", TextSize = 11,
         TextColor3 = Theme.TextDim, TextTransparency = 1,
         TextXAlignment = Enum.TextXAlignment.Center,
@@ -2302,30 +2330,30 @@ function Library:ShowLoader(config)
 
     -- ── RIGHT PANEL: PATCHNOTES (only when present) ───────────────────────
     if hasPatch then
-        -- Vertical separator
-        mk("Frame", { Parent = main, ZIndex = 254,
-            Position = UDim2.fromOffset(PanelW, 14),
-            Size = UDim2.new(0, 1, 1, -28),
+        -- Vertical separator down the middle of Content.
+        mk("Frame", { Parent = Content, ZIndex = 255,
+            Position = UDim2.fromOffset(L, 10),
+            Size = UDim2.new(0, 1, 1, -20),
             BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
 
         -- Changelog header (bold)
-        mkText("TextLabel", { Parent = main, ZIndex = 254,
-            Position = UDim2.fromOffset(PanelW + 12, 16),
-            Size = UDim2.new(1, -(PanelW + 24), 0, 14),
+        mkText("TextLabel", { Parent = Content, ZIndex = 255,
+            Position = UDim2.fromOffset(L + 12, 14),
+            Size = UDim2.new(1, -(L + 26), 0, 14),
             BackgroundTransparency = 1, Text = "Changelog", TextSize = 12,
             TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, "bold")
         -- Accent underline
-        mk("Frame", { Parent = main, ZIndex = 254,
-            Position = UDim2.fromOffset(PanelW + 12, 32),
-            Size = UDim2.new(1, -(PanelW + 24), 0, 1),
+        mk("Frame", { Parent = Content, ZIndex = 255,
+            Position = UDim2.fromOffset(L + 12, 30),
+            Size = UDim2.new(1, -(L + 26), 0, 1),
             BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
 
         -- Scrollable list
-        local scroll = mk("ScrollingFrame", { Parent = main, ZIndex = 254,
-            Position = UDim2.fromOffset(PanelW + 12, 38),
-            Size = UDim2.new(1, -(PanelW + 24), 1, -54),
+        local scroll = mk("ScrollingFrame", { Parent = Content, ZIndex = 255,
+            Position = UDim2.fromOffset(L + 12, 36),
+            Size = UDim2.new(1, -(L + 26), 1, -46),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             ScrollBarThickness = 2,
             ScrollBarImageColor3 = Theme.Accent,
