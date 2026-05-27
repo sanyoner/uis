@@ -970,10 +970,15 @@ local function attachWidgets(target, body)
         end
         local function refresh()
             valLbl.Text = fmtV()
-            -- Active selection → Accent color (per user spec). Falls back
-            -- to TextDim for empty / "None" so a fresh dropdown reads as
-            -- inactive at a glance.
-            valLbl.TextColor3 = hasSelection() and Theme.Accent or Theme.TextDim
+            -- Closed-state color: TextActive (white) when there's a real
+            -- selection, TextDim when "None"/empty. Accent stays
+            -- EXCLUSIVE to the open-popup row highlight per user spec
+            -- ("nur wenn man das dropdown menü öffnet accent farbig
+            --  angezeigt wird. nicht wenn man normal im normalen menü
+            --  rumscrollt"). White-on-selection still distinguishes
+            -- "user has picked a value" from "default/none" without
+            -- duplicating the popup's accent treatment in the menu.
+            valLbl.TextColor3 = hasSelection() and Theme.TextActive or Theme.TextDim
         end
 
         -- Forward-declared so SetValue can call it. The actual definition
@@ -1796,30 +1801,16 @@ function Library:CreateWindow(opts)
     tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 
     -- Tab content frame — RGB(25,25,25), 5-stroke INNER border, sits at
-    -- Y=36 with width = full minus 40 (20px gutter each side).
-    -- Content holds an INNER bg image (sibling of ContentInner, ZIndex 0)
-    -- so the user's custom background also shows through the central
-    -- content area — not just the thin chrome ring around it. Without
-    -- this second bg image the user's SetBackgroundImage swap was
-    -- technically working but only visible in a ~20px frame around the
-    -- menu (the Window's bgImg was hidden behind the opaque Content fill).
+    -- Y=36 with width = full minus 40 (20px gutter each side). The Content
+    -- bg is the opaque TabBg by design; the user's custom background
+    -- shows ONLY through the Window's outer bgImg (the chrome ring around
+    -- this frame). User spec: "custom background soll nur base frame
+    -- verändern, das wo das eigentliche skeezt_menu_bg war".
     local Content = mk("Frame", { Parent = Window,
         Size = UDim2.new(1, -40, 1, -56),
         Position = UDim2.fromOffset(20, 36),
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 4 })
     applyLayeredStrokes(Content, "inner")
-
-    -- Second bg image — fills Content (below ContentInner so widgets
-    -- render on top of it). Registered in _BgImageInstances so
-    -- SetBackgroundImage updates it alongside the Window-level bgImg.
-    local bgImgInner = mk("ImageLabel", { Parent = Content,
-        Size = UDim2.fromScale(1, 1),
-        Position = UDim2.fromScale(0, 0),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        Image = BG_ASSET or "", ScaleType = Enum.ScaleType.Stretch,
-        ImageTransparency = 0.15,  -- subtle overlay — keeps TabBg readable
-        ZIndex = 1 })
-    Library._BgImageInstances[#Library._BgImageInstances + 1] = bgImgInner
 
     local ContentInner = mk("Frame", { Parent = Content,
         Size = UDim2.new(1, -20, 1, -20),
@@ -1931,7 +1922,7 @@ function Library:CreateWindow(opts)
             Size = UDim2.fromOffset(chipW, 12),
             Position = UDim2.fromOffset(8, -7),
             BackgroundTransparency = 1,
-            Text = titleStr, TextSize = 11, TextColor3 = Theme.Accent,
+            Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
             ZIndex = 7,
@@ -2001,7 +1992,7 @@ function Library:CreateWindow(opts)
                 Size = UDim2.fromOffset(chipW, 12),
                 Position = UDim2.fromOffset(8, -7),
                 BackgroundTransparency = 1,
-                Text = titleStr, TextSize = 11, TextColor3 = Theme.Accent,
+                Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
                 TextXAlignment = Enum.TextXAlignment.Center,
                 TextYAlignment = Enum.TextYAlignment.Center,
                 ZIndex = 7,
@@ -2050,7 +2041,14 @@ function Library:CreateWindow(opts)
                 for _, t in tabs do
                     local active = (t == sub)
                     t._body.Visible = active
-                    t._btn.TextColor3 = active and Theme.TextActive or Theme.TextDim
+                    -- Active sub-tab = Accent so the user can see at a
+                    -- glance which sub-tab (Ragebot / Triggerbot / SilentAim)
+                    -- is currently open. Previously TextActive (white) was
+                    -- indistinguishable from the hover/text colors against
+                    -- the dark groupbox bg — all four buttons read as
+                    -- "grey" until clicked. Accent gives an unmistakable
+                    -- "this one is active" marker.
+                    t._btn.TextColor3 = active and Theme.Accent or Theme.TextDim
                 end
             end))
             track(btn.MouseEnter:Connect(function()
@@ -2060,11 +2058,19 @@ function Library:CreateWindow(opts)
                 if not sub._body.Visible then btn.TextColor3 = Theme.TextDim end
             end))
 
-            -- First tab becomes active by default.
+            -- First tab becomes active by default — paint it Accent so the
+            -- "which sub-tab is open" cue is visible immediately on first
+            -- render (not just after the user has clicked something).
             if #tabs == 1 then
                 body_.Visible = true
-                btn.TextColor3 = Theme.TextActive
+                btn.TextColor3 = Theme.Accent
             end
+
+            -- Theme switch: re-apply Accent vs TextDim based on live visibility.
+            Library:OnColorUpdate(function()
+                if not btn.Parent then return end
+                btn.TextColor3 = body_.Visible and Theme.Accent or Theme.TextDim
+            end)
             return sub
         end
 
@@ -2497,9 +2503,13 @@ end
 Library.NotificationPosition = "TopRight"
 local TweenService = game:GetService("TweenService")
 
+-- 640px wide so wide notifications don't get squeezed by the parent
+-- frame's bounds (previous 320px container clipped or compressed
+-- long-text notifications, which the user read as "doesn't show full
+-- text"). 600px is comfortably wider than the widest realistic toast.
 local NotifyArea = mk("Frame", { Parent = ScreenGui,
     Position = UDim2.new(1, -10, 0, 40), AnchorPoint = Vector2.new(1, 0),
-    Size = UDim2.fromOffset(320, 400),
+    Size = UDim2.fromOffset(640, 400),
     BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 200 })
 local NotifyLayout = listLayout(NotifyArea, Enum.FillDirection.Vertical, 6,
     Enum.VerticalAlignment.Top)
@@ -2538,21 +2548,12 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Outer Notification layout (user spec verbatim):
-    --   • 4px gap outer→main on LEFT, RIGHT, BOTTOM
-    --   • 6px gap outer→main on TOP (incl 2px rainbow strip)
-    --   • Rainbow 2px lower than the old position (caps Main's top edge)
-    --   • Text centered (X + Y) with explicit 4px text→main padding via
-    --     UIPadding on Main (so the gap is pixel-precise, not "however
-    --     much the label was inset")
-    --
-    -- Height = top_chrome(6) + main_padding_top(4) + glyph_height(~12) +
-    --          main_padding_bottom(4) + bottom_chrome(4) = 30. We use 42
-    --          to leave 12 extra pixels of breathing inside Main, so the
-    --          5-stroke INNER border feels like chrome instead of crowding
-    --          the glyph. This is what the user means by "richtig padding"
-    --          — the previous 38px height made the text hug the strokes.
-    local h = 42
+    -- Layout (user spec):
+    --   • 4px outer→main on LEFT/RIGHT/BOTTOM, 6px on TOP (incl 2px rainbow)
+    --   • Rainbow caps Main's top edge (Y=6), shadow at Y=7
+    --   • Text centered, 6px text→main padding via UIPadding on Main
+    --   • h = 48 (was 42) — extra height fixes "zu klein" complaint
+    local h = 48
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
     local ax = 0
@@ -2564,6 +2565,7 @@ function Library:Notify(text, duration)
         AnchorPoint = Vector2.new(ax, 0),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
+        ClipsDescendants = false,
         Size = UDim2.fromOffset(0, h), ZIndex = 200 })
     applyLayeredStrokes(outer, "outer")
     local outerStrokes = {}
@@ -2575,13 +2577,10 @@ function Library:Notify(text, duration)
     end
 
     -- Inner Main: TabBg with the 5-stroke INNER composite.
-    --   Main.X = 4   (left inset)
-    --   Main.Y = 6   (top inset: 4px gap + 2px rainbow)
-    --   Main.W = 1, -8   (4 + 4 horizontal chrome)
-    --   Main.H = 1, -10  (6 + 4 vertical chrome)
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
+        ClipsDescendants = false,
         Size = UDim2.new(1, -8, 1, -10),
         Position = UDim2.fromOffset(4, 6), ZIndex = 201 })
     applyLayeredStrokes(main, "inner")
@@ -2592,16 +2591,13 @@ function Library:Notify(text, duration)
             innerStrokes[#innerStrokes + 1] = c
         end
     end
-    -- Explicit text→main padding (4px each side) so the label CAN'T crowd
-    -- the inner strokes. Without this, the previous flow relied on the
-    -- label's UDim2(-8 width) to imply padding, which the user read as
-    -- "no padding" because it WASN'T padding — it was margin. UIPadding
-    -- pushes children inward, exactly what the user spec asks for.
-    uipad(main, 4, 4, 4, 4)
+    -- Explicit 6px text→main padding (was 4). User spec: visible padding
+    -- between text and the inner-stroke band so the toast doesn't read as
+    -- "all text, no chrome".
+    uipad(main, 6, 6, 6, 6)
 
     -- Rainbow strip + 50% shadow — sibling of Main inside Outer.
-    -- Y=6 (caps Main's top edge); shadow Y=7 (1px line at rainbow bottom).
-    -- This is the "2px tiefer" placement the user asked for.
+    -- Y=6 caps Main's top edge; shadow Y=7 (1px line at rainbow bottom).
     local rb = mk("Frame", { Parent = outer, ZIndex = 202,
         Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
@@ -2618,40 +2614,43 @@ function Library:Notify(text, duration)
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label fills the padded interior of Main (UIPadding handles the inset).
-    -- TextX/YAlignment Center per user spec. Bold font so the toast carries
-    -- the same weight as the watermark/groupbox titles.
+    -- Label fills the padded interior of Main (UIPadding handles inset).
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, Text = text,
-        TextSize = 12, TextColor3 = Theme.TextActive,
+        TextSize = 13, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
         TextTransparency = 1,
     }, "bold")
-    -- Label outline is auto-added by mkText; fade it with the label.
     local lblStroke
     for _, c in lbl:GetChildren() do
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
-    -- Width = max(TextService bound, measureText) + chrome.
-    -- Chrome = 8 (outer→main 4+4) + 8 (main UIPadding 4+4) = 16.
-    -- TS alone undersized notifications because SourceSansBold is narrower
-    -- than the live-rendered custom Verdana Bold — taking max() with
-    -- measureText (mult 0.62) compensates for the glyph-advance gap.
-    -- Floor 100px so a 1-char toast still reads as a notification, not
-    -- a square chip.
+    -- Width calculation: TextService(SourceSansBold) is consistently narrower
+    -- than the live-rendered custom Verdana Bold (user complaint: "zeigen
+    -- nicht den gesamten text"). Triple safety:
+    --   1. Take max(TS_SourceSansBold, measureText_bold).
+    --   2. Add 30% safety multiplier — Verdana Bold's glyph-advance is
+    --      reliably ~15-25% wider than SourceSansBold at the same size.
+    --   3. Chrome budget +24 (8 outer + 12 main UIPadding + 4 visual
+    --      breathing).
+    --   4. After first Heartbeat, read lbl.TextBounds (the ACTUAL rendered
+    --      width in the live font) and re-tween width if our estimate
+    --      undershot. This is the definitive fix — TextBounds is the
+    --      ground truth Roblox itself uses to draw the glyphs.
+    --   5. Floor 140px so a 1-char toast still reads as a notification.
     local TS = game:GetService("TextService")
     local tsW = 0
     local ok, b = pcall(function()
-        return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
-            Vector2.new(99999, 14))
+        return TS:GetTextSize(text, 13, Enum.Font.SourceSansBold,
+            Vector2.new(99999, 16))
     end)
     if ok and b then tsW = b.X end
-    local mW = measureText(text, 12, "bold")
-    local textW = math.max(tsW, mW)
-    local w = math.max(100, math.ceil(textW) + 16)
+    local mW = measureText(text, 13, "bold")
+    local textW = math.max(tsW, mW) * 1.3
+    local w = math.max(140, math.ceil(textW) + 24)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -2676,6 +2675,32 @@ function Library:Notify(text, duration)
     if lblStroke then
         TweenService:Create(lblStroke, TI_IN, { Transparency = 0 }):Play()
     end
+
+    -- Post-render width correction. TextService(SourceSansBold) is only a
+    -- proxy — the LIVE font (custom Verdana Bold loaded from sanyoner/
+    -- fonts) renders glyphs at a different advance. lbl.TextBounds.X
+    -- reads the REAL post-render width in the active font, but it's only
+    -- populated AFTER Roblox has rendered the text at least once. Wait
+    -- one Heartbeat, re-measure, and re-tween if our heuristic
+    -- undershot. This is what guarantees long-text notifications fit
+    -- regardless of which font ultimately loaded.
+    task.spawn(function()
+        RunService.Heartbeat:Wait()
+        if not (outer and outer.Parent and lbl and lbl.Parent) then return end
+        local realW = 0
+        pcall(function() realW = lbl.TextBounds.X end)
+        if realW > 0 then
+            -- Required outer width = real text width + chrome budget (24px).
+            -- Bump if our heuristic was wrong; never shrink (the grow tween
+            -- is mid-flight and shrinking would visibly snap).
+            local needed = math.ceil(realW) + 24
+            if needed > w then
+                pcall(outer.TweenSize, outer,
+                    UDim2.fromOffset(needed, h),
+                    Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+            end
+        end
+    end)
 
     task.spawn(function()
         -- Hold for the configured duration, then fade out. The countdown
@@ -3350,7 +3375,13 @@ local KeybindFrame = mk("Frame", { Parent = ScreenGui,
     Size = UDim2.fromOffset(212, 0),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
     AutomaticSize = Enum.AutomaticSize.Y,
-    Visible = true, ZIndex = 180, Active = true })
+    -- Hidden at construction so the HUD doesn't flash on-screen between
+    -- the moment this Frame is parented and the moment ShowLoader sets
+    -- _LoaderGate=true. The Heartbeat populator below toggles Visible
+    -- based on _LoaderGate, so scripts that DON'T call ShowLoader (gate
+    -- stays false) get the HUD as soon as the populator runs its first
+    -- pass — no permanent hiding.
+    Visible = false, ZIndex = 180, Active = true })
 applyLayeredStrokes(KeybindFrame, "outer")
 -- 20px bottom chrome below Tab so the layered border doesn't crowd content
 -- (mirrors the 20px UIPadding bottom from the base G2L).
@@ -3461,6 +3492,17 @@ do
 
     track(RunService.Heartbeat:Connect(function()
         if Library.Unloaded then return end
+        -- Hide the HUD entirely while the loader gate is engaged. Without
+        -- this the keybinds panel was visible from script start (even
+        -- before ShowLoader finished), reading as a half-broken UI.
+        -- User-reported: "keybinds hud wird angezeigt obwohl das script
+        -- nichtmal fertig mit dem laden ist".
+        if Library._LoaderGate then
+            if KeybindFrame.Visible then KeybindFrame.Visible = false end
+            return
+        elseif not KeybindFrame.Visible then
+            KeybindFrame.Visible = true
+        end
         if not Library._KeyPickers then return end
         for _, kp in Library._KeyPickers do
             -- Is the bind currently active? (matters for inner label visibility)
@@ -4423,31 +4465,35 @@ do
     local Outer, Viewport, BoxOverlay, Labels, Healthbars, RotationState
     local boxRot, fillRot = 0, 0
 
-    -- Build a Camera + a NEUTRAL R15 idle rig inside the ViewportFrame.
-    -- Previous impl cloned LocalPlayer.Character — but in BloxStrike that
-    -- carries the active team kit (CT/T uniform, gloves, etc.) which made
-    -- the preview look like a half-loaded gamemode prop. User feedback:
-    -- "character broken (zeigt ct) nimm einfach einen normalen r15 char,
-    -- spawn einen im idle zustand". Now we pull a clean Robloxian via
-    -- CreateHumanoidModelFromUserId(1) (the original ROBLOX account, which
-    -- always returns the bare default R15 rig with no avatar items). If
-    -- that yields/fails, fall back to a hand-built block-R15 with skin/
-    -- shirt/pants tones so the preview never renders empty.
+    -- Build a uniformly-GREY R15 rig with REAL meshes (MeshParts) + a
+    -- Humanoid. User explicit ask (2026-05-27):
+    --   "entferne das mit localchar, mach das dummy grau, und adde
+    --    humanoid sowie echte r15 meshes, damit es nicht ein klumpen
+    --    aus parts ist"
+    -- Path: Players:CreateHumanoidModelFromDescription with an EMPTY
+    -- HumanoidDescription forces a default R15 rig — Roblox builds it
+    -- from the engine's bundled R15 MeshParts (Head, UpperTorso, etc.),
+    -- so we get a properly-curved character with a Humanoid attached.
+    -- If that yields/fails (rare on yubx — empty desc shouldn't hit
+    -- HTTP), buildBlockFallback fires as a last-resort hand-built rig.
+    --
+    -- After construction we walk every BasePart and override Color to
+    -- the same grey, strip BodyColors / Shirt / Pants / accessories so
+    -- nothing tints the meshes back.
+    local GREY = Color3.fromRGB(163, 163, 163)
+
     local function buildBlockFallback()
+        -- Block R15 fallback — used only when CreateHumanoidModelFrom
+        -- Description fails. Single-color grey + a Humanoid (so the
+        -- buildSceneInto pipeline's PlatformStand/AutoRotate=false
+        -- writes don't error).
         local m = Instance.new("Model")
         m.Name = "PreviewRig"
-        -- Standard Roblox default-avatar palette (the same colors a fresh
-        -- "Classic" Robloxian wears in Studio's Rig Builder → R15 Block):
-        --   Head + Arms + Hands  → Bright yellow (245, 205, 48)
-        --   UpperTorso + LowerTorso → Bright green  (40, 127, 71)
-        --   UpperLeg + LowerLeg + Foot → Navy blue  (40, 71, 173)
-        local yellow = Color3.fromRGB(245, 205, 48)
-        local green  = Color3.fromRGB( 40, 127, 71)
-        local navy   = Color3.fromRGB( 40,  71, 173)
-        local function part(name, size, pos, color)
+
+        local function part(name, size, pos)
             local p = Instance.new("Part")
             p.Name = name; p.Size = size; p.Position = pos
-            p.Color = color; p.Material = Enum.Material.SmoothPlastic
+            p.Color = GREY; p.Material = Enum.Material.SmoothPlastic
             p.Anchored = true; p.CanCollide = false; p.CanQuery = false
             p.CanTouch = false; p.Massless = true
             p.TopSurface = Enum.SurfaceType.Smooth
@@ -4456,57 +4502,70 @@ do
             return p
         end
 
-        -- ─── Standard Roblox R15 Block dimensions ──────────────────────────
-        -- Matches Studio's "Rig Builder → R15 Block" output 1:1:
-        --   Head            2 × 1     × 1
-        --   UpperTorso      2 × 1.225 × 1
-        --   LowerTorso      2 × 0.775 × 1
-        --   Upper limbs     1 × 1.225 × 1
-        --   Lower limbs     1 × 1.225 × 1
-        --   Hands / Feet    1 × 0.4   × 1
-        -- Vertical layout from ground (Y=0) up:
-        --   Feet:        0      .. 0.4
-        --   LowerLeg:    0.4    .. 1.625    center 1.0125
-        --   UpperLeg:    1.625  .. 2.85     center 2.2375
-        --   LowerTorso:  2.85   .. 3.625    center 3.2375
-        --   UpperTorso:  3.625  .. 4.85     center 4.2375
-        --   Head:        4.85   .. 5.85     center 5.35
-        -- HRP centered at Y=3 (above LowerTorso top, inside UpperTorso) so
-        -- the preview camera's orbit center sits at character mid-height.
+        -- Standard R15 Block dimensions (Studio Rig Builder spec).
         local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
-            Vector3.new(0, 3, 0), green)
+            Vector3.new(0, 3, 0))
         hrp.Transparency = 1
 
-        -- Torso (two segments per R15 spec).
-        part("LowerTorso",  Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0), green)
-        part("UpperTorso",  Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0), green)
-
-        -- Head — 2×1×1 block centered above UpperTorso.
-        part("Head",        Vector3.new(2, 1, 1), Vector3.new(0, 5.35, 0), yellow)
-
-        -- Arms hang at the sides. Shoulder Y = UpperTorso top = 4.85.
-        --   UpperArm:  Y 3.625..4.85   center 4.2375
-        --   LowerArm:  Y 2.4..3.625    center 3.0125
-        --   Hand:      Y 2.0..2.4      center 2.2
-        -- X = ±1.5 so the inside arm face (X=±1) touches the torso side.
-        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0), yellow)
-        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0), yellow)
-        part("LeftHand",      Vector3.new(1, 0.4,   1), Vector3.new(-1.5, 2.2,    0), yellow)
-        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0), yellow)
-        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0), yellow)
-        part("RightHand",     Vector3.new(1, 0.4,   1), Vector3.new( 1.5, 2.2,    0), yellow)
-
-        -- Legs. Hip Y = LowerTorso bottom = 2.85. X = ±0.5 so legs sit
-        -- under the torso (1-stud wide leg, body 2-stud wide).
-        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0), navy)
-        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0), navy)
-        part("LeftFoot",      Vector3.new(1, 0.4,   1), Vector3.new(-0.5, 0.2,    0), navy)
-        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0), navy)
-        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0), navy)
-        part("RightFoot",     Vector3.new(1, 0.4,   1), Vector3.new( 0.5, 0.2,    0), navy)
+        part("LowerTorso",    Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0))
+        part("UpperTorso",    Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0))
+        part("Head",          Vector3.new(2, 1,     1), Vector3.new(0, 5.35,   0))
+        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0))
+        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0))
+        part("LeftHand",      Vector3.new(1, 0.4,   1), Vector3.new(-1.5, 2.2,    0))
+        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0))
+        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0))
+        part("RightHand",     Vector3.new(1, 0.4,   1), Vector3.new( 1.5, 2.2,    0))
+        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0))
+        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0))
+        part("LeftFoot",      Vector3.new(1, 0.4,   1), Vector3.new(-0.5, 0.2,    0))
+        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0))
+        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0))
+        part("RightFoot",     Vector3.new(1, 0.4,   1), Vector3.new( 0.5, 0.2,    0))
 
         m.PrimaryPart = hrp
+
+        -- Add a Humanoid so PlatformStand/etc. writes in buildSceneInto
+        -- have something to target.
+        local hum = Instance.new("Humanoid")
+        hum.RigType = Enum.HumanoidRigType.R15
+        hum.HealthDisplayDistance = 0
+        hum.NameDisplayDistance = 0
+        hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        hum.Parent = m
+
         return m
+    end
+
+    local function buildR15WithMeshes()
+        -- Empty HumanoidDescription = default R15 rig with engine-bundled
+        -- MeshParts. This is the "echte r15 meshes" path — Head is a
+        -- proper sphere MeshPart, limbs/torso are properly-curved meshes,
+        -- and a Humanoid is attached automatically. The character has no
+        -- accessories / clothing / shirt / pants because the desc is
+        -- empty, so the post-strip pass below just recolors meshes grey.
+        local desc = Instance.new("HumanoidDescription")
+        local ok, char = pcall(function()
+            return Players:CreateHumanoidModelFromDescription(desc,
+                Enum.HumanoidRigType.R15)
+        end)
+        if not ok or not char then
+            return buildBlockFallback()
+        end
+
+        -- Recolor every BasePart grey + strip any tinting structures
+        -- that CreateHumanoidModelFromDescription may leave behind
+        -- (BodyColors instance, Shirt, Pants, ShirtGraphic).
+        for _, d in char:GetDescendants() do
+            if d:IsA("BasePart") then
+                pcall(function() d.Color = GREY end)
+            elseif d:IsA("BodyColors") or d:IsA("Shirt")
+                or d:IsA("Pants") or d:IsA("ShirtGraphic")
+                or d:IsA("Accessory") then
+                pcall(d.Destroy, d)
+            end
+        end
+        return char
     end
 
     -- Pose Roblox-default T-pose into a relaxed idle: arms hang ~85deg down.
@@ -4538,34 +4597,11 @@ do
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        -- LocalPlayer.Character clone is the preview rig. User explicit ask:
-        -- "nutze einfach den localplayer als model fürs esp preview". This
-        -- gives us the rig the user actually sees in-game (their own kit,
-        -- skin, accessories) rather than a generic block dummy. The block
-        -- fallback ONLY fires if LocalPlayer has no Character (loading
-        -- screen, post-respawn-pre-spawn window).
-        local char
-        do
-            local lp = game:GetService("Players").LocalPlayer
-            local lc = lp and lp.Character
-            local ok, cloned = pcall(function()
-                if not lc then return nil end
-                local archivableSnapshot = {}
-                for _, d in lc:GetDescendants() do
-                    archivableSnapshot[d] = d.Archivable
-                    d.Archivable = true
-                end
-                lc.Archivable = true
-                local c = lc:Clone()
-                lc.Archivable = archivableSnapshot[lc] ~= false
-                for d, was in archivableSnapshot do
-                    if d.Parent then pcall(function() d.Archivable = was end) end
-                end
-                return c
-            end)
-            if ok and cloned then char = cloned end
-        end
-        if not char then char = buildBlockFallback() end
+        -- Grey R15 rig with REAL MeshParts + a Humanoid (user spec
+        -- 2026-05-27). LocalPlayer.Character clone was removed at user
+        -- request because the in-game kit (team uniform / gloves / etc.)
+        -- leaked into the preview.
+        local char = buildR15WithMeshes()
 
         -- Strip everything dynamic so the rig is a static prop in the
         -- viewport — no scripts, no GUIs, no particles, no sounds.
