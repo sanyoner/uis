@@ -1296,10 +1296,13 @@ local function attachWidgets(target, body)
             return false
         end
 
-        -- Per-keypicker input listener (Toggle flip + Hold visual)
+        -- Per-keypicker input listener (Toggle flip + Hold visual).
+        -- Intentionally NO `gameProcessed` filter — sanyui doesn't filter
+        -- either (line 1596-1597 of reference), and filtering caused the
+        -- toggle to silently no-op when the menu had focus (any UI hover
+        -- raised gameProcessed, swallowing the keybind press).
         track(UserInputService.InputBegan:Connect(function(input, processed)
             if Library.ActiveKeyPicker then return end
-            if processed then return end
             local v = kp.Value
             if not v or v == "None" then return end
             local match = false
@@ -1569,14 +1572,18 @@ function Library:CreateWindow(opts)
 
     -- skeezt menu_bg.png — INSET 7px each side so the 7-px composite outer
     -- border (5-stroke layered at offsets 0/-1/-4t3/-5/-6) stays visible.
-    -- Without this inset the bg ImageLabel covers the inward strokes.
-    if BG_ASSET then
-        mk("ImageLabel", { Parent = Window,
-            Size = UDim2.new(1, -14, 1, -14),
-            Position = UDim2.fromOffset(7, 7),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-            Image = BG_ASSET, ScaleType = Enum.ScaleType.Stretch,
-            ZIndex = 0 })
+    -- Without this inset the bg ImageLabel covers the inward strokes. The
+    -- ImageLabel is ALWAYS created (even when BG_ASSET is nil) so the user
+    -- can later call Library:SetBackgroundImage(url) at any time to drop a
+    -- custom background into it.
+    local bgImg = mk("ImageLabel", { Parent = Window,
+        Size = UDim2.new(1, -14, 1, -14),
+        Position = UDim2.fromOffset(7, 7),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        Image = BG_ASSET or "", ScaleType = Enum.ScaleType.Stretch,
+        ZIndex = 0 })
+    if Library._BgImageInstances then
+        Library._BgImageInstances[#Library._BgImageInstances + 1] = bgImg
     end
 
     -- Rainbow strip at TOP. In the GameScat base the shadow OVERLAPS the
@@ -2097,6 +2104,55 @@ function Library:SetFont(name)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
+-- CUSTOM BACKGROUND IMAGE — replaces the default skeezt_menu_bg.png with a
+-- user-supplied URL. Validates the URL by attempting an HttpGet; on success
+-- writes to workspace + swaps the Window's BG ImageLabel. On failure (bad
+-- URL, network error, non-image content) restores the default and notifies.
+--
+-- Use:
+--   Library:SetBackgroundImage("https://example.com/myimage.png")  → swap
+--   Library:SetBackgroundImage(nil)                                → revert
+-- ══════════════════════════════════════════════════════════════════════════
+Library._BgImageInstances = setmetatable({}, { __mode = "v" })   -- weak refs
+Library._BgAssetDefault   = BG_ASSET                                -- baseline
+
+-- Register a BG ImageLabel so SetBackgroundImage can update it in place.
+-- CreateWindow stores the ImageLabel into Library._BgImageInstances.
+local function registerBgInstance(img)
+    if not img then return end
+    Library._BgImageInstances[#Library._BgImageInstances + 1] = img
+end
+
+function Library:SetBackgroundImage(url)
+    if url == nil or url == "" then
+        -- Revert to packaged default
+        local def = Library._BgAssetDefault or BG_ASSET
+        for _, img in self._BgImageInstances do
+            if img and img.Parent then pcall(function() img.Image = def or "" end) end
+        end
+        return true
+    end
+    if type(url) ~= "string" or not url:match("^https?://") then
+        if self.Notify then self:Notify("Invalid image URL", 3) end
+        return false, "invalid url"
+    end
+    -- Download to workspace + register as a customasset. Same recipe as the
+    -- font/bg loaders above — short-circuits if the file already exists.
+    local fname = "nachtara_userbg_" ..
+        string.gsub(url, "[^%w_-]", "_"):sub(1, 80) .. ".png"
+    local ok = ensureFile(fname, url)
+    local asset = ok and customAsset(fname) or nil
+    if not asset then
+        if self.Notify then self:Notify("Failed to load background image", 3) end
+        return false, "download failed"
+    end
+    for _, img in self._BgImageInstances do
+        if img and img.Parent then pcall(function() img.Image = asset end) end
+    end
+    return true
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
 -- NOTIFICATIONS — base-watermark-styled toast (5-stroke outer + inner Main
 -- + rainbow strip + shadow), sanyui-style animations (TweenSize grow +
 -- fade in + countdown bar drain + shrink). Position configurable via
@@ -2227,10 +2283,13 @@ function Library:Notify(text, duration)
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label
+    -- Label — raised 3px from previous Y=9 to Y=6, matching the user's
+    -- screenshot ask ("notification text must be higher"). Anchored 6px
+    -- below the rainbow shadow so the visual cadence reads "rainbow strip
+    -- → small breathing → text → bottom padding".
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Position = UDim2.fromOffset(8, 9),
-        Size = UDim2.new(1, -16, 0, 12),
+        Position = UDim2.fromOffset(8, 6),
+        Size = UDim2.new(1, -16, 0, 14),
         BackgroundTransparency = 1, Text = text,
         TextSize = 11, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -2871,29 +2930,29 @@ local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
 -- KeyPicker construction time (we expose the parent via .KeybindContainer).
 -- ══════════════════════════════════════════════════════════════════════════
 -- Base G2L layout (the user-provided keybinds design):
---   Outer Keybinds 212x113 (5 OUTER strokes, BG WindowBg)
+--   Outer Keybinds 212×113 (5 OUTER strokes, BG WindowBg) — base measurement
+--   for ONE keybind. Both outer + Tab AutomaticSize.Y so adding more active
+--   keybinds expands the whole window vertically (per user spec: "the tab
+--   frame is made for one key, if another key is active then expand the
+--   WHOLE gui for another key to fit in, but donot change the padding").
 --   ├─ Rainbow strip at TOP, sibling of everything else
 --   ├─ Rainbow shadow (1px, 50% black, 1px below rainbow)
 --   ├─ "Keybinds" outer title label
 --   └─ Tab frame (5 INNER strokes, BG TabBg) — holds active bind entries
 --        └─ one TextLabel per active keypicker — "[ KEY ] name : mode"
--- Width fixed at 212 per base spec; height fixed at 113 — Tab is internally
--- sized to hold ~3 lines, more lines just grow the visible bind count
--- within it without resizing the outer frame (which is what caused the
--- "bugs out when key pressed" complaint — the AutomaticSize-driven resize
--- jitter was visible on every label add/remove).
 local KeybindFrame = mk("Frame", { Parent = ScreenGui,
     AnchorPoint = Vector2.new(0, 0.5),
     Position = UDim2.new(0, 14, 0.5, 0),
-    Size = UDim2.fromOffset(212, 113),
+    Size = UDim2.fromOffset(212, 0),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+    AutomaticSize = Enum.AutomaticSize.Y,
     Visible = true, ZIndex = 180, Active = true })
 applyLayeredStrokes(KeybindFrame, "outer")
+-- 20px bottom chrome below Tab so the layered border doesn't crowd content
+-- (mirrors the 20px UIPadding bottom from the base G2L).
+mk("UIPadding", { Parent = KeybindFrame, PaddingBottom = UDim.new(0, 20) })
 
 -- Rainbow + 1px shadow at the TOP of the outer (sibling of Tab + title).
--- Y=6/7 to match the menu's rainbow vertical position (user reported the
--- old Y=4/5 felt "2px too high" on watermark + spectator boxes — same
--- chrome convention applies here for consistency).
 local kbRainbow = mk("Frame", { Parent = KeybindFrame, ZIndex = 182,
     Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
     BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
@@ -2914,7 +2973,7 @@ mk("Frame", { Parent = KeybindFrame, ZIndex = 183,
 -- Outer "Keybinds" title — sits below the rainbow at the top of the outer.
 -- Centered horizontally to match the base G2L layout.
 local KeybindTitle = mkText("TextLabel", { Parent = KeybindFrame,
-    Position = UDim2.fromOffset(0, 12),
+    Position = UDim2.fromOffset(0, 14),
     Size = UDim2.new(1, 0, 0, 14),
     BackgroundTransparency = 1, Text = "Keybinds",
     TextSize = 12, TextColor3 = Theme.TextActive,
@@ -2923,17 +2982,22 @@ local KeybindTitle = mkText("TextLabel", { Parent = KeybindFrame,
     ZIndex = 184 }, "bold")
 
 -- Inner Tab frame — holds the per-bind labels. INNER 5-stroke border + TabBg.
--- Fixed size from the base G2L (161x40 sub-frame inside the 212x113 outer).
--- Position centered horizontally below the title.
+-- Base height 40 for ONE bind; AutomaticSize.Y grows it for each additional
+-- active bind. The outer frame's AutomaticSize.Y picks up the new Tab height
+-- so the WHOLE gui expands together (one-window-grows behavior the user
+-- explicitly asked for).
 local KeybindTab = mk("Frame", { Parent = KeybindFrame, ZIndex = 181,
     AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0, 36),
-    Size = UDim2.fromOffset(172, 67),
+    Position = UDim2.new(0.5, 0, 0, 40),
+    Size = UDim2.fromOffset(172, 40),
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
-    ClipsDescendants = true })
+    AutomaticSize = Enum.AutomaticSize.Y })
 applyLayeredStrokes(KeybindTab, "inner")
-uipad(KeybindTab, 6)
-listLayout(KeybindTab, Enum.FillDirection.Vertical, 2)
+-- Same UIPadding regardless of how many binds are visible — the user
+-- explicit spec: "donot change the padding".
+uipad(KeybindTab, 11, 6, 11, 6)
+local kbTabLayout = listLayout(KeybindTab, Enum.FillDirection.Vertical, 2)
+kbTabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 
 -- Drag the HUD from anywhere on its surface (the title strip is too small
 -- to grab reliably on a 1-line bind list).
@@ -2979,10 +3043,12 @@ Library.KeybindContainer = KeybindFrame   -- sanyui alias
 do
     local function ensureHudLabel(kp)
         if kp._hudLabel and kp._hudLabel.Parent then return kp._hudLabel end
+        -- Centered horizontally inside Tab to match the base G2L spec
+        -- ("keybinds should be displayed center").
         kp._hudLabel = mkText("TextLabel", { Parent = KeybindTab,
-            Size = UDim2.new(1, 0, 0, 12), BackgroundTransparency = 1,
-            Text = "", TextSize = 11, TextColor3 = Theme.TextActive,
-            TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
+            Text = "", TextSize = 12, TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
             LayoutOrder = 1, ZIndex = 185, Visible = false,
         }, "reg")
@@ -3904,15 +3970,10 @@ do
         wm.Parent = vp
 
         local cam = Instance.new("Camera")
-        cam.FieldOfView = 30
+        cam.FieldOfView = 50   -- wider so a full R15 char fits at 10-stud range
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        -- buildSceneInto is called from RenderStepped via update() — we
-        -- can NOT yield here (would error the render callback). If
-        -- LocalPlayer.Character isn't available, return an empty scene;
-        -- the CharacterAdded listener wired up in build() will call
-        -- rebuildScene() asynchronously once the real char loads.
         local origChar = LocalPlayer.Character
         if not origChar then return wm, nil, cam, nil, nil end
 
@@ -3923,21 +3984,36 @@ do
         if not ok or not clone then return wm, nil, cam, nil, nil end
 
         local char = clone
-        -- Strip scripts so the cloned character can't run anything inside
-        -- the viewport. Drop any BillboardGui ESP attached to the real
-        -- character so the preview overlay doesn't render twice. Strip
-        -- Highlight/Decals on the real char that the script might have
-        -- added — we want the BARE character for ESP visualization.
+        -- Strip anything that runs/animates the rig inside the viewport, plus
+        -- any BillboardGui / Highlight the live ESP attached to the source
+        -- character (would re-render inside the preview window).
         for _, d in char:GetDescendants() do
             if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
                or d:IsA("BillboardGui") or d:IsA("Highlight") then
                 pcall(d.Destroy, d)
             end
         end
-        -- Reset BOTH Transparency AND LocalTransparencyModifier on every
-        -- BasePart. ThirdPerson + Chams + various game systems set one or
-        -- both to non-zero on the live character; the clone inherits them
-        -- and would render invisible. Explicit reset = guaranteed visible.
+
+        -- Step 1: Parent to the WorldModel BEFORE anchoring so PivotTo can
+        -- move all parts together via the existing Motor6Ds.
+        char.Parent = wm
+        local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+        if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
+
+        -- Step 2: Pivot the whole rig to origin so the camera math below
+        -- works in LOCAL coordinates regardless of where the source char
+        -- happens to be in the world. PivotTo uses PrimaryPart.CFrame as
+        -- the reference, which is HRP (already set).
+        if char.PrimaryPart then
+            pcall(function()
+                char:PivotTo(CFrame.new(0, 3, 0))
+            end)
+        end
+
+        -- Step 3: Anchor every BasePart, reset visibility flags. ThirdPerson
+        -- + Chams + various game systems may have set Transparency or
+        -- LocalTransparencyModifier on the live char; the clone inherits
+        -- them and would render invisible without explicit reset.
         for _, p in char:GetDescendants() do
             if p:IsA("BasePart") then
                 pcall(function()
@@ -3948,25 +4024,27 @@ do
                 end)
             elseif p:IsA("Decal") then
                 pcall(function() p.Transparency = 0 end)
+            elseif p:IsA("Texture") then
+                pcall(function() p.Transparency = 0 end)
             end
         end
-        -- The Humanoid stays so accessories animate / sit correctly. Just
-        -- disable physics-driven state changes so the rig doesn't fall.
+
+        -- Step 4: Stop the Humanoid from triggering state changes. With
+        -- everything anchored this is mostly cosmetic, but PlatformStand
+        -- prevents the rig from playing the Idle animation (which can
+        -- subtly shift parts in a ViewportFrame).
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             pcall(function()
                 hum.PlatformStand = true
                 hum.AutoRotate = false
                 hum:ChangeState(Enum.HumanoidStateType.Physics)
+                hum.HealthDisplayDistance = 0
+                hum.NameDisplayDistance = 0
             end)
         end
 
-        char.Parent = wm
-
-        local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
         local head = char:FindFirstChild("Head")
-        if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
-
         return wm, char, cam, hrp, head
     end
 
@@ -4185,7 +4263,8 @@ do
         -- viewport spins the character on its Y axis; vertical motion
         -- pitches the camera (clamped ±60°). Releasing MB1 leaves it where
         -- the user left it (no auto-spin), matching what the user asked for.
-        RotationState = { yaw = 0, pitch = 0, dist = 8,
+        -- Default dist=10 puts a full R15 char comfortably in frame at FOV 50.
+        RotationState = { yaw = 0, pitch = 0, dist = 10,
             dragging = false, last = nil }
         track(Viewport.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -4211,10 +4290,10 @@ do
                 math.rad(-60), math.rad(60))
         end))
 
-        -- Mouse wheel inside viewport = zoom (4..16 stud distance from char).
+        -- Mouse wheel inside viewport = zoom (6..20 stud distance from char).
         track(Viewport.InputChanged:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
-            RotationState.dist = math.clamp(RotationState.dist - input.Position.Z * 0.5, 4, 16)
+            RotationState.dist = math.clamp(RotationState.dist - input.Position.Z * 0.5, 6, 20)
         end))
 
         ESPPreview._content = content
@@ -4255,8 +4334,9 @@ do
         local char, cam = ESPPreview._char, ESPPreview._cam
         if not char or not cam then return end
 
-        -- Orbit camera. Center = HRP position (or model PrimaryPart, or
-        -- (0, 3, 0) fallback for clones whose HRP got destroyed).
+        -- Orbit camera. Since buildSceneInto PivotTos the char to (0, 3, 0),
+        -- the center is always close to that — but read it live from
+        -- the HRP/PrimaryPart so the camera tracks if anything jitters.
         local center
         if ESPPreview._hrp and ESPPreview._hrp.Parent then
             center = ESPPreview._hrp.Position
@@ -4268,7 +4348,7 @@ do
         local yaw, pitch, dist = RotationState.yaw, RotationState.pitch, RotationState.dist
         local cx = math.cos(pitch) * math.sin(yaw) * dist
         local cz = math.cos(pitch) * math.cos(yaw) * dist
-        local cy = math.sin(pitch) * dist + 1.5  -- 1.5 stud uplift so eye-line lands on the head
+        local cy = math.sin(pitch) * dist
         cam.CFrame = CFrame.new(center + Vector3.new(cx, cy, cz), center)
 
         -- ESP overlay reads SAME Toggles/Options the main ESP loop reads,
