@@ -4490,22 +4490,17 @@ do
     -- nothing tints the meshes back.
     local GREY = Color3.fromRGB(163, 163, 163)
 
-    -- Block R15 dummy with SpecialMesh shapes (sphere head + cylinder limbs)
-    -- to round off the silhouette without touching Players:CreateHumanoid
-    -- ModelFromDescription. The Description path was tried but on yubx it
-    -- auto-parents the returned character to workspace as a side effect —
-    -- the bot appeared "unter der map" while the ViewportFrame stayed empty,
-    -- and main.lua's chams system happily adorned the workspace-resident
-    -- parts (user-reported: "chams doesnt go on the esp preview but it
-    -- goes on the created character under the map"). This path NEVER
-    -- touches workspace: Model is created with Parent=nil, all parts go
-    -- inside the Model, the Model is parented only to the ViewportFrame
-    -- by buildSceneInto. Zero workspace exposure, zero chams leak.
-    local function buildR15WithMeshes()
+    -- Hand-built grey R15 block dummy. Only used as a fallback when
+    -- CreateHumanoidModelFromDescription fails (rare). Single-color grey
+    -- + a Humanoid (so buildSceneInto's PlatformStand/AutoRotate=false
+    -- writes don't error). The Description path below produces the real
+    -- meshed character; this just exists so the preview never renders
+    -- empty if Roblox's description build raises.
+    local function buildBlockFallback()
         local m = Instance.new("Model")
         m.Name = "PreviewRig"
 
-        local function part(name, size, pos, meshType, meshScale)
+        local function part(name, size, pos)
             local p = Instance.new("Part")
             p.Name = name; p.Size = size; p.Position = pos
             p.Color = GREY; p.Material = Enum.Material.SmoothPlastic
@@ -4513,69 +4508,33 @@ do
             p.CanTouch = false; p.Massless = true
             p.TopSurface = Enum.SurfaceType.Smooth
             p.BottomSurface = Enum.SurfaceType.Smooth
-            -- Mesh override — Sphere for Head, Cylinder for limbs/torso
-            -- gives the rig a rounded R15 silhouette while leaving Size
-            -- (chams adornment uses Size, not visual mesh) untouched, so
-            -- the chams box still hugs the body part correctly.
-            if meshType then
-                local mesh = Instance.new("SpecialMesh")
-                mesh.MeshType = meshType
-                if meshScale then mesh.Scale = meshScale end
-                mesh.Parent = p
-            end
             p.Parent = m
             return p
         end
 
-        -- Standard R15 Block dimensions (Studio Rig Builder spec). HRP
-        -- stays a pure block (transparent anyway). Head = sphere mesh.
-        -- Limbs + torso = cylinder mesh to round off the corners.
+        -- Standard R15 Block dimensions (Studio Rig Builder spec).
         local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
             Vector3.new(0, 3, 0))
         hrp.Transparency = 1
 
-        -- Torso = two cylinder meshes stacked. Mesh.Scale (0.5,1,0.5)
-        -- inscribes the cylinder inside the part's 2×Y×1 AABB so it
-        -- doesn't bulge past the visible bounding box.
-        part("LowerTorso",    Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-        part("UpperTorso",    Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-
-        -- Head = sphere. Scale (0.55, 1, 0.55) makes it round but not as
-        -- wide as the body (matches Roblox default R15 head proportions).
-        part("Head",          Vector3.new(2, 1,     1), Vector3.new(0, 5.35,   0),
-            Enum.MeshType.Sphere, Vector3.new(0.55, 1, 0.55))
-
-        -- Arms — cylinder meshes for the upper/lower segments. Hands stay
-        -- short blocks (real R15 hands aren't cylindrical anyway).
-        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("LowerTorso",    Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0))
+        part("UpperTorso",    Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0))
+        part("Head",          Vector3.new(2, 1,     1), Vector3.new(0, 5.35,   0))
+        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0))
+        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0))
         part("LeftHand",      Vector3.new(1, 0.4,   1), Vector3.new(-1.5, 2.2,    0))
-        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0))
+        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0))
         part("RightHand",     Vector3.new(1, 0.4,   1), Vector3.new( 1.5, 2.2,    0))
-
-        -- Legs — cylinder meshes for upper/lower segments. Feet stay block.
-        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0))
+        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0))
         part("LeftFoot",      Vector3.new(1, 0.4,   1), Vector3.new(-0.5, 0.2,    0))
-        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
-        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0),
-            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0))
+        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0))
         part("RightFoot",     Vector3.new(1, 0.4,   1), Vector3.new( 0.5, 0.2,    0))
 
         m.PrimaryPart = hrp
 
-        -- Add a Humanoid so PlatformStand/etc. writes in buildSceneInto
-        -- have something to target.
         local hum = Instance.new("Humanoid")
         hum.RigType = Enum.HumanoidRigType.R15
         hum.HealthDisplayDistance = 0
@@ -4586,8 +4545,43 @@ do
         return m
     end
 
-    -- Block fallback alias — older code paths still reference this name.
-    local buildBlockFallback = buildR15WithMeshes
+    -- Build the R15 preview rig via CreateHumanoidModelFromDescription —
+    -- the "echte r15 meshes" path. Description is empty so the Roblox
+    -- engine constructs a default R15 with proper MeshParts (curved
+    -- Head, properly-shaped limbs/torso), no accessories, no clothing.
+    --
+    -- Known limitation (user-acknowledged 2026-05-27): on yubx this call
+    -- auto-parents the returned character to workspace as a side effect,
+    -- which makes a "shadow" rig visible under the map. The previous
+    -- attempt to fix that with a hand-built block rig produced a
+    -- "Klumpen aus Parts" look the user disliked. Compromise per user:
+    -- accept the workspace shadow + keep the proper meshes. Chams
+    -- preview is DISABLED for this rig (see updateChamsPreview below)
+    -- so the workspace-leaked character doesn't get chams adorned.
+    local function buildR15WithMeshes()
+        local desc = Instance.new("HumanoidDescription")
+        local ok, char = pcall(function()
+            return Players:CreateHumanoidModelFromDescription(desc,
+                Enum.HumanoidRigType.R15)
+        end)
+        if not ok or not char then
+            return buildBlockFallback()
+        end
+
+        -- Recolor every BasePart grey + strip any tinting structures
+        -- that CreateHumanoidModelFromDescription may leave behind
+        -- (BodyColors instance, Shirt, Pants, ShirtGraphic).
+        for _, d in char:GetDescendants() do
+            if d:IsA("BasePart") then
+                pcall(function() d.Color = GREY end)
+            elseif d:IsA("BodyColors") or d:IsA("Shirt")
+                or d:IsA("Pants") or d:IsA("ShirtGraphic")
+                or d:IsA("Accessory") then
+                pcall(d.Destroy, d)
+            end
+        end
+        return char
+    end
 
     -- Pose Roblox-default T-pose into a relaxed idle: arms hang ~85deg down.
     -- Motor6D C0 changes DO propagate through ViewportFrame rendering — the
@@ -4851,54 +4845,16 @@ do
         return state
     end
 
-    -- Called per frame from update(). Reads ESP tab Toggles / Options live
-    -- so any in-menu edit (mode swap, color picker drag, transparency
-    -- slider) reflects on the preview bot immediately.
+    -- Chams preview DISABLED (user spec 2026-05-27: "mach das wieder der
+    -- char davor angezeigt wird, aber der chams dann einfach nicht
+    -- previewed werden kann"). CreateHumanoidModelFromDescription auto-
+    -- parents the rig into workspace on yubx, and any chams adornments
+    -- we create for the preview character would adorn the workspace-
+    -- resident copy — visible as chams "under the map". Returning a
+    -- hard no-op + ensuring no leftover adorns exist keeps the preview
+    -- visually clean while keeping the proper R15 meshes.
     local function updateChamsPreview(char, parent)
-        local enabled = Toggles.ESP and Toggles.ESP.Value
-                    and Toggles.Chams and Toggles.Chams.Value
-        if not enabled or not char or not char.Parent then
-            clearChamsPreview()
-            return
-        end
-        local mode = (Options.ChamsMode and Options.ChamsMode.Value) or "Standard"
-        local color = (Options.ChamsColor and Options.ChamsColor.Value) or Color3.fromRGB(255, 0, 105)
-        local outlineColor = (Options.ChamsOutlineColor and Options.ChamsOutlineColor.Value) or Color3.new(0, 0, 0)
-        local trans = (Options.ChamsTrans and Options.ChamsTrans.Value) or 0
-
-        -- Rebuild on mode change OR char change. Live updates (color /
-        -- transparency / outline) write to existing adornments below.
-        if not chamsPreviewState or chamsPreviewState.mode ~= mode
-            or chamsPreviewState._char ~= char then
-            clearChamsPreview()
-            chamsPreviewState = buildChamsPreview(char, parent, mode, color, outlineColor, trans)
-            chamsPreviewState._char = char
-            return
-        end
-
-        for _, d in chamsPreviewState.parts do
-            if d.kind == "wire" then
-                if d.main then d.main.Color3 = color end
-            elseif d.kind == "glow" then
-                if d.main then
-                    d.main.Color3 = Color3.new(color.R * 5, color.G * 5, color.B * 5)
-                end
-            elseif d.kind == "xray" then
-                if d.main then
-                    d.main.Color3 = Color3.new(
-                        math.min(color.R * 5, 1),
-                        math.min(color.G * 5, 1),
-                        math.min(color.B * 5, 1)
-                    )
-                end
-            else
-                if d.main then
-                    d.main.Color3 = color
-                    if d.main.Transparency ~= trans then d.main.Transparency = trans end
-                end
-                if d.outline then d.outline.Color3 = outlineColor end
-            end
-        end
+        clearChamsPreview()
     end
 
     -- Forward declarations so build() can reference rebuildScene + update
