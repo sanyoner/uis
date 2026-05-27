@@ -846,7 +846,20 @@ local function attachWidgets(target, body)
         function dd:SetValue(v, supp)
             if multi then
                 local t = {}
-                if type(v) == "table" then for _, k in v do t[k] = true end end
+                if type(v) == "table" then
+                    -- Accept BOTH array form (`{"Head","Torso"}`, callers'
+                    -- Default) AND key-table form (`{Head=true,Torso=true}`,
+                    -- what we re-assign from internal state). Iterating only
+                    -- by value as before turned `{Head=true}` into `{[true]=true}`
+                    -- which then rendered as "true" in fmtV.
+                    for k, val in v do
+                        if val == true and type(k) == "string" then
+                            t[k] = true
+                        elseif type(val) == "string" then
+                            t[val] = true
+                        end
+                    end
+                end
                 self.Value = t
             else self.Value = v end
             refresh()
@@ -2802,22 +2815,21 @@ end
 -- exposed WindowBg between them showed as a thin black stroke. With a 10px
 -- gap the outer band is intentional chrome instead of an accidental edge.
 -- ══════════════════════════════════════════════════════════════════════════
+-- Outer: 350x54 (matches base watermark G2L proportions). The rainbow strip
+-- lives at the TOP of OUTER (sibling of Main), not inside Main — that is
+-- the structural difference between this and the previous broken layout.
 local Watermark = mk("Frame", { Parent = ScreenGui,
     AnchorPoint = Vector2.new(1, 0),
     Position = UDim2.new(1, -10, 0, 10),
-    Size = UDim2.fromOffset(300, 44),
+    Size = UDim2.fromOffset(350, 54),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
     Visible = false, ZIndex = 190 })
 applyLayeredStrokes(Watermark, "outer")
 
--- Inner Main: inset 10px on each side (matches base watermark spacing).
-local WatermarkMain = mk("Frame", { Parent = Watermark,
-    Size = UDim2.new(1, -20, 1, -20), Position = UDim2.fromOffset(10, 10),
-    BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
-applyLayeredStrokes(WatermarkMain, "inner")
-
--- Rainbow + 1px shadow on Main (base position offsets 6,4 / 6,5).
-local watermarkRb = mk("Frame", { Parent = WatermarkMain, ZIndex = 192,
+-- Rainbow + 1px shadow at the top of OUTER (sibling of Main).
+-- Position (6, 4) and (6, 5) — rainbow row + 1px shadow row directly under.
+-- ZIndex 192/193 so they render above the 5-stroke outer border layers.
+local watermarkRb = mk("Frame", { Parent = Watermark, ZIndex = 192,
     Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
     BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
 do
@@ -2829,15 +2841,24 @@ do
     }
     g.Parent = watermarkRb
 end
-mk("Frame", { Parent = WatermarkMain, ZIndex = 193,
+mk("Frame", { Parent = Watermark, ZIndex = 193,
     Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
     BorderSizePixel = 0 })
 
--- Label sits below the rainbow strip with even vertical breathing.
+-- Inner Main: positioned BELOW the rainbow strip with 10px margin each side
+-- and 10px from the top (clearing the rainbow), 10px from the bottom.
+-- Result: Main is 330x32 in a 350x54 outer (1:1 with base watermark spec).
+local WatermarkMain = mk("Frame", { Parent = Watermark,
+    Size = UDim2.new(1, -20, 1, -22),
+    Position = UDim2.fromOffset(10, 12),
+    BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
+applyLayeredStrokes(WatermarkMain, "inner")
+
+-- Label fills Main (no rainbow inside Main anymore, so centered vertically).
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
-    Position = UDim2.fromOffset(8, 8),
-    Size = UDim2.new(1, -16, 1, -10),
+    Position = UDim2.fromOffset(8, 0),
+    Size = UDim2.new(1, -16, 1, 0),
     BackgroundTransparency = 1, Text = "",
     TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
@@ -2851,23 +2872,66 @@ local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
 -- parity lets feature code register/unregister ContainerLabels here at
 -- KeyPicker construction time (we expose the parent via .KeybindContainer).
 -- ══════════════════════════════════════════════════════════════════════════
+-- Base G2L layout (the user-provided keybinds design):
+--   Outer Keybinds (5 OUTER strokes, BG WindowBg, AutomaticSize.Y)
+--   ├─ Rainbow strip at top (sibling of Tab)
+--   ├─ Rainbow shadow (1px, 50% black, sits over rainbow's bottom row)
+--   ├─ "Keybinds" outer title label
+--   └─ Tab frame (5 INNER strokes, BG TabBg) — holds the active bind entries
+--        └─ one TextLabel per active keypicker — "[KEY] name : mode"
 local KeybindFrame = mk("Frame", { Parent = ScreenGui,
     AnchorPoint = Vector2.new(0, 0.5),
     Position = UDim2.new(0, 14, 0.5, 0),
-    Size = UDim2.fromOffset(150, 24),
+    Size = UDim2.fromOffset(180, 60),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
     AutomaticSize = Enum.AutomaticSize.Y, Visible = true,
     ZIndex = 180, Active = true })
-applyLayeredStrokes(KeybindFrame, "inner")
-uipad(KeybindFrame, 4)
-listLayout(KeybindFrame, Enum.FillDirection.Vertical, 1)
+applyLayeredStrokes(KeybindFrame, "outer")
 
+-- Rainbow + 1px shadow at the TOP of the outer (sibling of Tab + title).
+local kbRainbow = mk("Frame", { Parent = KeybindFrame, ZIndex = 182,
+    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+    BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
+do
+    local g = Instance.new("UIGradient"); g.Name = "\0"
+    g.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   Theme.RainbowA),
+        ColorSequenceKeypoint.new(0.5, Theme.RainbowB),
+        ColorSequenceKeypoint.new(1,   Theme.RainbowC),
+    }
+    g.Parent = kbRainbow
+end
+mk("Frame", { Parent = KeybindFrame, ZIndex = 183,
+    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
+    BorderSizePixel = 0 })
+
+-- Outer "Keybinds" title — sits below the rainbow at the top of the outer.
 local KeybindTitle = mkText("TextLabel", { Parent = KeybindFrame,
-    Size = UDim2.new(1, 0, 0, 12), BackgroundTransparency = 1,
-    Text = "keybinds", TextSize = 11, TextColor3 = Theme.TextActive,
+    Position = UDim2.fromOffset(8, 10),
+    Size = UDim2.new(1, -16, 0, 12),
+    BackgroundTransparency = 1, Text = "Keybinds",
+    TextSize = 11, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Left,
     TextYAlignment = Enum.TextYAlignment.Center,
-    LayoutOrder = 0, ZIndex = 181 }, "bold")
+    ZIndex = 184 }, "bold")
+
+-- Inner Tab frame — holds the per-bind labels. INNER 5-stroke border + TabBg.
+-- AutomaticSize.Y so it grows as binds become active. Anchored 10px below the
+-- title, 10px gap on each side (matches base G2L proportions).
+local KeybindTab = mk("Frame", { Parent = KeybindFrame, ZIndex = 181,
+    Position = UDim2.fromOffset(10, 26),
+    Size = UDim2.new(1, -20, 0, 14),
+    BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+    AutomaticSize = Enum.AutomaticSize.Y })
+applyLayeredStrokes(KeybindTab, "inner")
+uipad(KeybindTab, 4)
+listLayout(KeybindTab, Enum.FillDirection.Vertical, 1)
+
+-- Grow the OUTER frame so its bottom edge sits 10px below KeybindTab —
+-- mirrors the 10px bottom chrome from the base watermark/keybinds spec.
+mk("UIPadding", { Parent = KeybindFrame,
+    PaddingBottom = UDim.new(0, 10) })
 
 -- Drag the HUD from anywhere on its surface (the title strip is too small
 -- to grab reliably on a 1-line bind list).
@@ -2913,12 +2977,12 @@ Library.KeybindContainer = KeybindFrame   -- sanyui alias
 do
     local function ensureHudLabel(kp)
         if kp._hudLabel and kp._hudLabel.Parent then return kp._hudLabel end
-        kp._hudLabel = mkText("TextLabel", { Parent = KeybindFrame,
+        kp._hudLabel = mkText("TextLabel", { Parent = KeybindTab,
             Size = UDim2.new(1, 0, 0, 12), BackgroundTransparency = 1,
             Text = "", TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
-            LayoutOrder = 1, ZIndex = 181, Visible = false,
+            LayoutOrder = 1, ZIndex = 185, Visible = false,
         }, "reg")
         return kp._hudLabel
     end
@@ -2927,32 +2991,40 @@ do
         if Library.Unloaded then return end
         if not Library._KeyPickers then return end
         local anyBound = false
+        local anyActive = false
         for _, kp in Library._KeyPickers do
-            -- Has a real key bound? (matters for title visibility)
+            -- Has a real key bound? (matters for OUTER visibility)
             local hasKey = kp.Value and kp.Value ~= "None" and kp.Value ~= ""
             if hasKey then anyBound = true end
 
-            -- Is the bind currently active? (matters for label visibility)
+            -- Is the bind currently active? (matters for inner label visibility)
             local active = false
             local ok, state = pcall(kp.GetState, kp)
             if ok and state then active = true end
+            if active then anyActive = true end
 
             local lbl = kp._hudLabel
             if active then
                 lbl = ensureHudLabel(kp)
-                lbl.Text = "[" .. (kp.Value or "-") .. "] " .. (kp._label or "")
+                -- Base G2L format: "[KEY name : mode]" — key + friendly name
+                -- followed by current mode (toggle / hold / always).
+                local modeStr = (kp.Mode or "Toggle"):lower()
+                lbl.Text = "[" .. (kp.Value or "-") .. " " ..
+                           (kp._label or "") .. " : " .. modeStr .. "]"
                 if not lbl.Visible then lbl.Visible = true end
             elseif lbl and lbl.Visible then
                 lbl.Visible = false
             end
         end
-        -- Title visibility: ANY bound key keeps the title up so the HUD chrome
-        -- stays consistent — title hides only when no keypicker has a key at
-        -- all (fresh page, all binds set to None). Previous "anyActive only"
-        -- caused the title to disappear the moment the user flipped every
-        -- bound toggle off, which the user reported as a bug.
+        -- Title visibility: ANY bound key keeps the title visible so the HUD
+        -- chrome stays consistent — title hides only when no keypicker has a
+        -- key set at all. Inner Tab hides when nothing is active, so the
+        -- outer chrome stays clean (rainbow + title) even with no live binds.
         if KeybindTitle.Visible ~= anyBound then
             KeybindTitle.Visible = anyBound
+        end
+        if KeybindTab.Visible ~= anyActive then
+            KeybindTab.Visible = anyActive
         end
     end))
 end
@@ -3039,27 +3111,26 @@ function Library:CreatePlaceholderBox(config)
         position = UDim2.new(1, -(width + 30), 0, 50 + idx * 120)
     end
 
-    -- Same chrome as the Watermark: outer 5-stroke + 10px gap on each side
-    -- exposing the WindowBg layered band + inner Main (TabBg, 5 inner strokes).
-    -- Replaces the previous (-2, +1) layout which exposed a 1px-thick black
-    -- line between outer and Main — the "bugged 1px outline" the user
-    -- reported on the Spectator List panel.
+    -- Chrome matches the Watermark exactly: outer (5 OUTER strokes, BG
+    -- WindowBg) hosts the rainbow strip + 1px shadow at the top, then a
+    -- single Main frame (5 INNER strokes, BG TabBg) inset below the rainbow.
+    --
+    -- Previous layout had `main.Size = (1,-20,1,-20)` (bound to outer.Y) AND
+    -- both with AutomaticSize.Y — a self-referencing loop that pinned the
+    -- box at its initial 52px height regardless of content. Fix: outer's
+    -- height is driven by absolute child positions + AutomaticSize.Y, main
+    -- uses AutomaticSize.Y driven by content, no relative-height binding.
     local outer = mk("Frame", { Parent = ScreenGui,
-        Position = position, Size = UDim2.fromOffset(width, 52),
+        Position = position, Size = UDim2.fromOffset(width, 0),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
         AutomaticSize = Enum.AutomaticSize.Y,
         ZIndex = 195, Active = true })
     applyLayeredStrokes(outer, "outer")
+    -- 10px bottom chrome (mirrors the 10px top above the rainbow strip).
+    mk("UIPadding", { Parent = outer, PaddingBottom = UDim.new(0, 10) })
 
-    local main = mk("Frame", { Parent = outer,
-        Size = UDim2.new(1, -20, 1, -20),
-        Position = UDim2.fromOffset(10, 10),
-        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
-        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 196 })
-    applyLayeredStrokes(main, "inner")
-
-    -- Rainbow strip + 1px shadow on Main — same as Watermark (base parity).
-    local phRb = mk("Frame", { Parent = main, ZIndex = 196,
+    -- Rainbow strip + 1px shadow on OUTER (sibling of main).
+    local phRb = mk("Frame", { Parent = outer, ZIndex = 196,
         Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
     do
@@ -3071,35 +3142,47 @@ function Library:CreatePlaceholderBox(config)
         }
         g.Parent = phRb
     end
-    mk("Frame", { Parent = main, ZIndex = 196,
+    mk("Frame", { Parent = outer, ZIndex = 196,
         Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
         BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
         BorderSizePixel = 0 })
 
-    -- Title sits BELOW the rainbow strip (Y=4-6) so they don't overlap.
-    -- Content area starts after title (or right below rainbow if no title).
+    -- Main frame sits below the rainbow. AutomaticSize.Y is driven entirely
+    -- by content; main has its own UIPadding for breathing room around the
+    -- label list + title.
+    local main = mk("Frame", { Parent = outer,
+        Size = UDim2.new(1, -20, 0, 0),
+        Position = UDim2.fromOffset(10, 12),
+        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 196 })
+    applyLayeredStrokes(main, "inner")
+    mk("UIPadding", { Parent = main,
+        PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) })
+
+    -- Use a single ListLayout inside main so title + content stack cleanly
+    -- and main's AutomaticSize.Y measures from the layout's total height.
+    listLayout(main, Enum.FillDirection.Vertical, 4)
+
+    -- Title (optional). Sits at the top of main; AutomaticSize drives layout.
     local titleLbl
-    local headerOffset = 10  -- below rainbow when no title
     if title then
         titleLbl = mkText("TextLabel", { Parent = main,
-            Position = UDim2.fromOffset(8, 10),
-            Size = UDim2.new(1, -16, 0, 14),
+            Size = UDim2.new(1, 0, 0, 14),
             BackgroundTransparency = 1, Text = tostring(title),
             TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
-            ZIndex = 197 }, "bold")
-        headerOffset = 28
+            LayoutOrder = 0, ZIndex = 197 }, "bold")
     end
 
-    -- Content area — labels stack vertically, AutomaticSize drives main → outer.
+    -- Content area — labels stack vertically below title.
     local content = mk("Frame", { Parent = main,
-        Position = UDim2.fromOffset(8, headerOffset),
-        Size = UDim2.new(1, -16, 0, 0),
+        Size = UDim2.new(1, 0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0,
-        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 197 })
+        AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 197,
+        LayoutOrder = 1 })
     listLayout(content, Enum.FillDirection.Vertical, 1)
-    mk("UIPadding", { Parent = content, PaddingBottom = UDim.new(0, 4) })
 
     -- Drag from anywhere on the outer surface.
     do
@@ -3193,10 +3276,10 @@ function Library:SetWatermark(text)
     if Watermark.Visible then
         pcall(function()
             -- Width = text width + 16px label padding (inside Main) + 20px
-            -- outer-band chrome (10px gap on each side of Main). Height stays
-            -- at 44 (base watermark proportion: 24px Main + 20px chrome).
+            -- outer-band chrome (10px gap on each side of Main). Height fixed
+            -- at 54 to match the base watermark G2L spec exactly.
             local textW = measureText(text, 12, "bold")
-            Watermark.Size = UDim2.fromOffset(math.max(160, textW + 36), 44)
+            Watermark.Size = UDim2.fromOffset(math.max(180, textW + 36), 54)
         end)
     end
 end
