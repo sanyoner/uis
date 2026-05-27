@@ -1,44 +1,3 @@
---[[ ════════════════════════════════════════════════════════════════════════
-    nachtara | UI v3-gs — GameSense IMGUI port, top tabs (no icons)
-    Date: 2026-05-26
-
-    BASIS:
-      Widget pixel-cadence cloned 1:1 from skeezt's imgui_widgets.cpp / imgui.cpp:
-        Checkbox    → imgui_widgets.cpp:1459 (8x8 inset, vertical gradient,
-                       inactive 76/51, hover 86/61, checked = MenuTheme/alpha)
-        Slider      → imgui_widgets.cpp:3068 (52/68 track, 62/78 hover,
-                       MenuTheme fill, centered bold value, label above)
-        GroupBox    → imgui.cpp:4764 GroupBoxTitleEx (title chip OVER border)
-        MenuTheme   → imgui_draw.cpp:181  RGB(147, 197, 57) — lime green
-      Window outline pulled from sanyo's GameScat base (5-stroke layered
-      via UIStroke.BorderOffset, palette 13/61/41/61/13).
-
-    LAYOUT DEVIATION:
-      Tabs are HORIZONTAL at the TOP of the window (Linoria style, no icons)
-      instead of GS's left-side vertical icon sidebar. Rainbow strip + 1px
-      shadow live at Y=6 of the OUTER window (not inside any padding area).
-
-    ASSETS — three local font caches in this workspace are preferred over
-    HTTP fetches (already present from prior scripts):
-        VerdanaBoldAF.font     — Bold (groupbox titles, slider values, tabs)
-        VerdanaNomarl_AF.font  — Regular (widget labels, dropdowns)
-        SmallestPixel.font     — Tiny pixel font (keybind text "[F]" / "[-]")
-      Falls back to github (sanyoner/fonts) then to Roblox builtin Verdana.
-      Background image (skeezt_menu_bg.png) cached locally too, github fallback.
-
-    PUBLIC API (parity with nachtara_ui.lua v2 — drop-in compatible):
-      Library:CreateWindow{Title=…, Size=…}
-      Window:AddTab(name)
-      Tab:AddLeftGroupbox(name)  /  AddRightGroupbox(name)
-      Groupbox:AddToggle / AddSlider / AddButton / AddDropdown
-              AddColorPicker / AddKeyPicker / AddLabel / AddDivider
-              AddDependencyBox
-      Toggle's chain: AddColorPicker / AddKeyPicker (inline next to row)
-      Library.Toggles[id].Value / :SetValue(v)
-      Library.Options[id].Value / :SetValue(v)
-      Library:Toggle() / :Unload() / :SetToggleKey(key)
-═════════════════════════════════════════════════════════════════════════ ]]
-
 local _cloneref = (type(cloneref) == "function") and cloneref or function(x) return x end
 local Players          = _cloneref(game:GetService("Players"))
 local CoreGui          = _cloneref(game:GetService("CoreGui"))
@@ -686,14 +645,27 @@ local function attachWidgets(target, body)
         opt = opt or {}
         local FLAT      = Color3.fromRGB(34, 34, 34)
         local FLAT_HOV  = Color3.fromRGB(44, 44, 44)
-        local btn = mkText("TextButton", { Parent = body,
+        -- Button is text-LESS (Text = "") so the visible label lives in
+        -- a child TextLabel we can position independently. The label sits
+        -- 2px above the button's vertical centerline per user spec
+        -- ("button labels 2px höher, nicht button ansich sondern nur
+        -- der text").
+        local btn = mk("TextButton", { Parent = body,
             Size = UDim2.new(1, 0, 0, 14),
             BackgroundColor3 = FLAT, BorderSizePixel = 0,
-            Text = opt.Text or id, TextSize = 12,
-            TextColor3 = Theme.TextActive, AutoButtonColor = false,
+            Text = "", AutoButtonColor = false,
             LayoutOrder = opt.LayoutOrder or 0,
-        }, "bold")
+        })
         inkBorder(btn)
+        mkText("TextLabel", { Parent = btn,
+            Position = UDim2.fromOffset(0, -2),
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
+            Text = opt.Text or id, TextSize = 12,
+            TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextYAlignment = Enum.TextYAlignment.Center,
+        }, "bold")
 
         track(btn.MouseEnter:Connect(function() btn.BackgroundColor3 = FLAT_HOV end))
         track(btn.MouseLeave:Connect(function() btn.BackgroundColor3 = FLAT end))
@@ -1614,8 +1586,14 @@ local function attachWidgets(target, body)
         applyFont(field, "reg")
         applyTextOutline(field)
         inkBorder(field)
+        -- PaddingBottom = 4 with PaddingTop = 0 shifts the vertically-
+        -- centered text 2px UP within the 14px-tall field: the renderable
+        -- area shrinks from 0..14 → 0..10, so TextYAlignment.Center lands
+        -- at Y=5 instead of Y=7. Matches user spec: "input fields text
+        -- 2px höher, auch hier nicht das input ansich sondern nur der text".
         local pad = Instance.new("UIPadding"); pad.Name = "\0"
-        pad.PaddingLeft = UDim.new(0, 5); pad.PaddingRight = UDim.new(0, 5)
+        pad.PaddingLeft   = UDim.new(0, 5); pad.PaddingRight  = UDim.new(0, 5)
+        pad.PaddingTop    = UDim.new(0, 0); pad.PaddingBottom = UDim.new(0, 4)
         pad.Parent = field
 
         local input = { Type = "Input", Value = opt.Default or "", Callback = opt.Callback }
@@ -1809,8 +1787,20 @@ function Library:CreateWindow(opts)
     -- through the strokes for the in-border effect.
     local function buildGroupbox(parent, name)
         local titleStr = tostring(name or "")
-        local titleW, _ = measureText(titleStr, 11, "bold")
-        titleW = titleW + 8   -- 4px breathing each side of chip
+        -- Exact text-bound measurement via TextService. SourceSansBold has
+        -- near-identical metrics to our custom Verdana Bold at 11px, so
+        -- the chip width matches the actual rendered glyph width within
+        -- ±1px. measureText is the last-resort fallback.
+        local titleW
+        do
+            local TS = game:GetService("TextService")
+            local ok, b = pcall(function()
+                return TS:GetTextSize(titleStr, 11, Enum.Font.SourceSansBold,
+                    Vector2.new(99999, 12))
+            end)
+            titleW = (ok and b and b.X > 0) and math.ceil(b.X)
+                  or measureText(titleStr, 11, "bold")
+        end
 
         local wrap = mk("Frame", { Parent = parent,
             Size = UDim2.new(1, 0, 0, 22),
@@ -1825,20 +1815,28 @@ function Library:CreateWindow(opts)
             ClipsDescendants = false })
         applyLayeredStrokes(gb, "inner")
 
-        -- Title chip — TabBg color spans across the 5-stroke border at the
-        -- top of gb so the title text reads cleanly without border lines
-        -- passing through the letters. Sibling of gb (under wrap) with
-        -- higher ZIndex so it renders OVER gb's strokes.
-        -- Y shifted 2px upward (chip -2→-4, text -5→-7) per user request:
-        -- titles felt one beat too low against the top stroke band.
+        -- Title chip — TabBg (the column background behind the groupbox)
+        -- "erases" the inner-stroke band visible at the top of gb by
+        -- covering it with the surrounding color, so the title text reads
+        -- on a clean background instead of crossing through stroke pixels.
+        -- Per user spec: "use a frame, make it the same color as the
+        -- background, scale it up to the text bound and position it in
+        -- the middle of the text" — chip width is now the EXACT measured
+        -- text width (no extra breathing), so the outline band is opened
+        -- only as wide as the text actually is.
+        -- chipW gets +2 over titleW so it covers the leading/trailing
+        -- glyph anti-aliasing pixels at the text edges; without that,
+        -- the outermost subpixel of the first/last glyph would still
+        -- touch the stroke band.
+        local chipW = titleW + 2
         mk("Frame", { Parent = wrap,
-            Size = UDim2.fromOffset(titleW, 6),
-            Position = UDim2.fromOffset(11, -4),
+            Size = UDim2.fromOffset(chipW, 6),
+            Position = UDim2.fromOffset(10, -4),
             BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
             ZIndex = 6 })
         mkText("TextLabel", { Parent = wrap,
-            Size = UDim2.fromOffset(titleW, 12),
-            Position = UDim2.fromOffset(11, -7),
+            Size = UDim2.fromOffset(chipW, 12),
+            Position = UDim2.fromOffset(10, -7),
             BackgroundTransparency = 1,
             Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Center,
@@ -1886,17 +1884,27 @@ function Library:CreateWindow(opts)
         local titleTop = 4  -- where the tab-button row sits (no title path)
         if title and title ~= "" then
             local titleStr = tostring(title)
-            local titleW = measureText(titleStr, 11, "bold") + 8
-            -- Same 2px lift as Groupbox titles (chip -2→-4, text -5→-7) so
-            -- Tabbox + Groupbox title placement stays visually consistent.
+            -- Same exact-bounds measurement as Groupbox titles. See the
+            -- comment in buildGroupbox above for the rationale.
+            local titleW
+            do
+                local TS = game:GetService("TextService")
+                local ok, b = pcall(function()
+                    return TS:GetTextSize(titleStr, 11,
+                        Enum.Font.SourceSansBold, Vector2.new(99999, 12))
+                end)
+                titleW = (ok and b and b.X > 0) and math.ceil(b.X)
+                      or measureText(titleStr, 11, "bold")
+            end
+            local chipW = titleW + 2
             mk("Frame", { Parent = wrap,
-                Size = UDim2.fromOffset(titleW, 6),
-                Position = UDim2.fromOffset(11, -4),
+                Size = UDim2.fromOffset(chipW, 6),
+                Position = UDim2.fromOffset(10, -4),
                 BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
                 ZIndex = 6 })
             mkText("TextLabel", { Parent = wrap,
-                Size = UDim2.fromOffset(titleW, 12),
-                Position = UDim2.fromOffset(11, -7),
+                Size = UDim2.fromOffset(chipW, 12),
+                Position = UDim2.fromOffset(10, -7),
                 BackgroundTransparency = 1,
                 Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
                 TextXAlignment = Enum.TextXAlignment.Center,
@@ -2471,15 +2479,18 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Inner Main: TabBg, inset 6px sides / top 12 / bottom 8. Tightened
-    -- from 8px so the rainbow strip and inner-5-stroke chrome fit closer
-    -- to the actual text content (user feedback: notification width
-    -- shouldn't have visible empty padding around the text).
+    -- Inner Main: TabBg.
+    -- Spec (user): 4px gap outer→main on left/right/bottom; 6px on top
+    -- (the extra 2px on top holds the rainbow strip). Pixel-perfect:
+    --   Main.X     = 4  (left inset)
+    --   Main.Y     = 6  (top inset: 4px gap + 2px rainbow)
+    --   Main.W     = 1, -8  (4 + 4)
+    --   Main.H     = 1, -10 (6 + 4)
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, -12, 1, -20),
-        Position = UDim2.fromOffset(6, 12), ZIndex = 201 })
+        Size = UDim2.new(1, -8, 1, -10),
+        Position = UDim2.fromOffset(4, 6), ZIndex = 201 })
     applyLayeredStrokes(main, "inner")
     local innerStrokes = {}
     for _, c in main:GetChildren() do
@@ -2489,11 +2500,12 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Rainbow strip + shadow — sibling of Main inside Outer (matches the
-    -- Watermark layout). Y=4 leaves 2px above the rainbow inside the outer
-    -- chrome zone. Width inset 12px each side to clear the outer chrome.
+    -- Rainbow strip + shadow — sibling of Main inside Outer. Moved 2px
+    -- down from the old Y=4/5 to Y=6/7 per user spec ("rainbow 2px tiefer
+    -- setzen, auch shadow"). Rainbow now sits AT Main's top edge with
+    -- ZIndex 202 > 201, so it visually caps Main.
     local rb = mk("Frame", { Parent = outer, ZIndex = 202,
-        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+        Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
         BackgroundTransparency = 1 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
@@ -2504,21 +2516,20 @@ function Library:Notify(text, duration)
     }
     rbGrad.Parent = rb
     local rbShadow = mk("Frame", { Parent = outer, ZIndex = 203,
-        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+        Size = UDim2.new(1, -8, 0, 1), Position = UDim2.fromOffset(4, 7),
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label fills Main vertically-centered. 4px horizontal padding inside
-    -- Main is the minimum that keeps glyphs clear of the inner 5-stroke
-    -- chrome (inner stroke is 4px deep at the -4 offset). Combined with
-    -- the 6px outer-to-main inset, total chrome budget = 10px each side
-    -- = 20px (matches the +20 in the width calculation above).
+    -- Label fills Main. CENTERED text (X + Y). 4px horizontal padding
+    -- inside Main matches the inner-5-stroke depth (inner strokes
+    -- 0/-1/-2/-3/-4 = 4px deep) so glyphs clear the stroke band on the
+    -- sides. Vertical center is handled by TextYAlignment.Center.
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
         Position = UDim2.fromOffset(4, 0),
         Size = UDim2.new(1, -8, 1, 0),
         BackgroundTransparency = 1, Text = text,
         TextSize = 11, TextColor3 = Theme.TextActive,
-        TextXAlignment = Enum.TextXAlignment.Left,
+        TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
         TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1,
     }, "reg")
@@ -2528,17 +2539,22 @@ function Library:Notify(text, duration)
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
-    -- Measure the actual rendered text width. lbl.TextBounds is computed
-    -- from the glyph runs in the live font, so this matches what the user
-    -- sees pixel-for-pixel — no more 10-15% heuristic overshoot.
-    -- +1 stud margin past TextBounds is for the optional TextTruncate
-    -- ellipsis room; without it Roblox may still truncate at the last full
-    -- glyph even though TextBounds says it fits. +20 is the chrome budget
-    -- (6+6 outer-to-main + 4+4 main-to-label). Floor 60px keeps a 1-char
-    -- toast visible.
+    -- Measure the rendered text width. Use BOTH the live label TextBounds
+    -- AND a TextService:GetTextSize estimate, take the max — TextBounds
+    -- can return 0 on fresh labels with pending custom-font loads, and
+    -- the heuristic occasionally undershoots; max() of both never
+    -- undershoots. Chrome budget +16: 4+4 outer→main + 4+4 main→label.
+    -- +2 safety margin so Roblox's subpixel rounding doesn't truncate
+    -- the last glyph. Floor 60px keeps a 1-char toast visible.
     local textW = lbl.TextBounds.X
+    local TS = game:GetService("TextService")
+    local ok, b = pcall(function()
+        return TS:GetTextSize(text, 11, Enum.Font.SourceSans,
+            Vector2.new(99999, 14))
+    end)
+    if ok and b and b.X > textW then textW = b.X end
     if textW < 1 then textW = measureText(text, 11, "reg") end
-    local w = math.max(60, math.ceil(textW) + 21)
+    local w = math.max(60, math.ceil(textW) + 18)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -3197,14 +3213,16 @@ local WatermarkMain = mk("Frame", { Parent = Watermark,
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
--- Label fills Main with tight padding so the watermark width hugs the text.
--- Padding 4px each side (was 8) + the 10px main-inset on each side gives a
--- 28px chrome budget — matches the +28 used in SetWatermark's width calc.
+-- Label fills Main with 5px padding each side per user spec ("5 pixel
+-- abstand vom text start zu border links und 5px von textende zu border
+-- rechts"). Combined with Main's 10px outer-band inset, the user-visible
+-- text-to-outer-border distance is 15px on each side, with the OUTER
+-- 5-stroke chrome rendering inside that 15px gap.
 -- Y=-1 nudges the label one pixel up from Main's vertical centerline so
 -- the glyph baseline sits visually flush with the inner-stroke top edge.
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
-    Position = UDim2.fromOffset(4, -1),
-    Size = UDim2.new(1, -8, 1, 0),
+    Position = UDim2.fromOffset(5, -1),
+    Size = UDim2.new(1, -10, 1, 0),
     BackgroundTransparency = 1, Text = "",
     TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
@@ -3638,17 +3656,32 @@ function Library:SetWatermark(text)
     Watermark.Visible = (text ~= nil and text ~= "")
     if Watermark.Visible then
         pcall(function()
-            -- Width = exact rendered text width (from the label's live
-            -- TextBounds — what the user actually sees) + 28px chrome:
-            -- 10px outer band on each side of Main + 4px label padding
-            -- inside Main on each side = 28 total. Floor 120px so an
-            -- empty / single-field watermark still has a readable frame.
-            -- Old code used the measureText heuristic (#str * size *
-            -- 0.62) which overshot ~10-15% → visible empty space
-            -- (user feedback: "es ist zu viel abstand").
-            local textW = watermarkLbl.TextBounds.X
-            if textW < 1 then textW = measureText(text, 12, "bold") end
-            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 28), 54)
+            -- Robust width measurement. The previous TextBounds-only flow
+            -- showed "..." (truncate) when the live label hadn't finished
+            -- font binding before SetWatermark fired — TextBounds returned
+            -- 0 or a stale value, fallback measureText undershot, the
+            -- watermark stayed too narrow.
+            -- Fix: take the MAX of three sources so we never undershoot:
+            --   1) TS:GetTextSize with SourceSansBold (close-metric to
+            --      our custom Verdana Bold, synchronous, robust)
+            --   2) live label TextBounds.X (accurate when font is loaded)
+            --   3) measureText heuristic (always available)
+            -- Chrome budget = 10px outer-band inset each side + 5px
+            -- label padding each side = 30 total — matches the
+            -- watermarkLbl layout exactly. Floor 120px keeps a single-
+            -- field watermark readable.
+            local TS = game:GetService("TextService")
+            local textW = 0
+            local ok, b = pcall(function()
+                return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
+                    Vector2.new(99999, 14))
+            end)
+            if ok and b and b.X > textW then textW = b.X end
+            local tb = watermarkLbl.TextBounds.X
+            if tb > textW then textW = tb end
+            local heur = measureText(text, 12, "bold")
+            if heur > textW then textW = heur end
+            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 30), 54)
         end)
     end
 end
