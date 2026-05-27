@@ -932,8 +932,17 @@ local function attachWidgets(target, body)
             end))
             track(item.MouseButton1Click:Connect(function()
                 if multi then
-                    dd.Value[v] = (dd.Value[v] and nil) or true
+                    -- Toggle: nil ↔ true. Previous expression
+                    -- `(dd.Value[v] and nil) or true` ALWAYS resolved to true
+                    -- because `nil or true == true`, so unchecking never
+                    -- worked. Explicit `if` is unambiguous.
+                    if dd.Value[v] then
+                        dd.Value[v] = nil
+                    else
+                        dd.Value[v] = true
+                    end
                     refresh(); safeCallback(dd.Callback, dd.Value)
+                    notifyDepChange()
                 else
                     dd:SetValue(v); popupOuter.Visible = false
                     Library.ActivePopup = nil
@@ -2199,9 +2208,11 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Rainbow strip + shadow (base-watermark parity).
+    -- Rainbow strip + shadow (base-watermark parity). Stretched 2px wider on
+    -- each side compared to the original (was -12/+6 → now -8/+4) — user
+    -- reported the rainbow looked cropped against the notification edges.
     local rb = mk("Frame", { Parent = main, ZIndex = 202,
-        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+        Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 4),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
         BackgroundTransparency = 1 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
@@ -2212,7 +2223,7 @@ function Library:Notify(text, duration)
     }
     rbGrad.Parent = rb
     local rbShadow = mk("Frame", { Parent = main, ZIndex = 203,
-        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+        Size = UDim2.new(1, -8, 0, 1), Position = UDim2.fromOffset(4, 5),
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
@@ -2231,14 +2242,6 @@ function Library:Notify(text, duration)
     for _, c in lbl:GetChildren() do
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
-
-    -- Bottom progress/countdown bar
-    local progress = mk("Frame", { Parent = main, ZIndex = 204,
-        AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 0, 1, 0),
-        Size = UDim2.new(1, 0, 0, 1),
-        BackgroundColor3 = Theme.Accent, BorderSizePixel = 0,
-        BackgroundTransparency = 1 })
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -2259,20 +2262,16 @@ function Library:Notify(text, duration)
     TweenService:Create(main,     TI_IN, { BackgroundTransparency = 0 }):Play()
     TweenService:Create(rb,       TI_IN, { BackgroundTransparency = 0 }):Play()
     TweenService:Create(rbShadow, TI_IN, { BackgroundTransparency = 0.5 }):Play()
-    TweenService:Create(progress, TI_IN, { BackgroundTransparency = 0 }):Play()
     TweenService:Create(lbl,      TI_IN, { TextTransparency = 0 }):Play()
     if lblStroke then
         TweenService:Create(lblStroke, TI_IN, { Transparency = 0 }):Play()
     end
 
     task.spawn(function()
-        -- Drain countdown bar after the fade-in finishes.
-        task.wait(0.35)
-        TweenService:Create(progress,
-            TweenInfo.new(duration, Enum.EasingStyle.Linear),
-            { Size = UDim2.new(0, 0, 0, 1) }):Play()
-
-        task.wait(duration)
+        -- Hold for the configured duration, then fade out. The countdown
+        -- progress bar was removed at user request — the toast just fades
+        -- after `duration` seconds with no visible timer.
+        task.wait(0.35 + duration)
         if not outer.Parent then return end
 
         -- Phase 3: fade out + width-shrink
@@ -2288,7 +2287,6 @@ function Library:Notify(text, duration)
         TweenService:Create(main,     TI_OUT, { BackgroundTransparency = 1 }):Play()
         TweenService:Create(rb,       TI_OUT, { BackgroundTransparency = 1 }):Play()
         TweenService:Create(rbShadow, TI_OUT, { BackgroundTransparency = 1 }):Play()
-        TweenService:Create(progress, TI_OUT, { BackgroundTransparency = 1 }):Play()
         TweenService:Create(lbl,      TI_OUT, { TextTransparency = 1 }):Play()
         if lblStroke then
             TweenService:Create(lblStroke, TI_OUT, { Transparency = 1 }):Play()
@@ -2827,10 +2825,11 @@ local Watermark = mk("Frame", { Parent = ScreenGui,
 applyLayeredStrokes(Watermark, "outer")
 
 -- Rainbow + 1px shadow at the top of OUTER (sibling of Main).
--- Position (6, 4) and (6, 5) — rainbow row + 1px shadow row directly under.
--- ZIndex 192/193 so they render above the 5-stroke outer border layers.
+-- Position (6, 6) and (6, 7) — matches the main Window's rainbow Y so
+-- the watermark visually shares its rainbow vertical placement with the
+-- menu (the old Y=4 read "2px too high" against the menu rainbow at Y=6).
 local watermarkRb = mk("Frame", { Parent = Watermark, ZIndex = 192,
-    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
     BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
 do
     local g = Instance.new("UIGradient"); g.Name = "\0"
@@ -2842,16 +2841,15 @@ do
     g.Parent = watermarkRb
 end
 mk("Frame", { Parent = Watermark, ZIndex = 193,
-    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
     BorderSizePixel = 0 })
 
 -- Inner Main: positioned BELOW the rainbow strip with 10px margin each side
--- and 10px from the top (clearing the rainbow), 10px from the bottom.
--- Result: Main is 330x32 in a 350x54 outer (1:1 with base watermark spec).
+-- and 14px from the top (clears rainbow at Y=6+2), 10px from the bottom.
 local WatermarkMain = mk("Frame", { Parent = Watermark,
-    Size = UDim2.new(1, -20, 1, -22),
-    Position = UDim2.fromOffset(10, 12),
+    Size = UDim2.new(1, -20, 1, -24),
+    Position = UDim2.fromOffset(10, 14),
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
@@ -2873,24 +2871,31 @@ local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
 -- KeyPicker construction time (we expose the parent via .KeybindContainer).
 -- ══════════════════════════════════════════════════════════════════════════
 -- Base G2L layout (the user-provided keybinds design):
---   Outer Keybinds (5 OUTER strokes, BG WindowBg, AutomaticSize.Y)
---   ├─ Rainbow strip at top (sibling of Tab)
---   ├─ Rainbow shadow (1px, 50% black, sits over rainbow's bottom row)
+--   Outer Keybinds 212x113 (5 OUTER strokes, BG WindowBg)
+--   ├─ Rainbow strip at TOP, sibling of everything else
+--   ├─ Rainbow shadow (1px, 50% black, 1px below rainbow)
 --   ├─ "Keybinds" outer title label
---   └─ Tab frame (5 INNER strokes, BG TabBg) — holds the active bind entries
---        └─ one TextLabel per active keypicker — "[KEY] name : mode"
+--   └─ Tab frame (5 INNER strokes, BG TabBg) — holds active bind entries
+--        └─ one TextLabel per active keypicker — "[ KEY ] name : mode"
+-- Width fixed at 212 per base spec; height fixed at 113 — Tab is internally
+-- sized to hold ~3 lines, more lines just grow the visible bind count
+-- within it without resizing the outer frame (which is what caused the
+-- "bugs out when key pressed" complaint — the AutomaticSize-driven resize
+-- jitter was visible on every label add/remove).
 local KeybindFrame = mk("Frame", { Parent = ScreenGui,
     AnchorPoint = Vector2.new(0, 0.5),
     Position = UDim2.new(0, 14, 0.5, 0),
-    Size = UDim2.fromOffset(180, 60),
+    Size = UDim2.fromOffset(212, 113),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
-    AutomaticSize = Enum.AutomaticSize.Y, Visible = true,
-    ZIndex = 180, Active = true })
+    Visible = true, ZIndex = 180, Active = true })
 applyLayeredStrokes(KeybindFrame, "outer")
 
 -- Rainbow + 1px shadow at the TOP of the outer (sibling of Tab + title).
+-- Y=6/7 to match the menu's rainbow vertical position (user reported the
+-- old Y=4/5 felt "2px too high" on watermark + spectator boxes — same
+-- chrome convention applies here for consistency).
 local kbRainbow = mk("Frame", { Parent = KeybindFrame, ZIndex = 182,
-    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
     BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
 do
     local g = Instance.new("UIGradient"); g.Name = "\0"
@@ -2902,36 +2907,33 @@ do
     g.Parent = kbRainbow
 end
 mk("Frame", { Parent = KeybindFrame, ZIndex = 183,
-    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
     BorderSizePixel = 0 })
 
 -- Outer "Keybinds" title — sits below the rainbow at the top of the outer.
+-- Centered horizontally to match the base G2L layout.
 local KeybindTitle = mkText("TextLabel", { Parent = KeybindFrame,
-    Position = UDim2.fromOffset(8, 10),
-    Size = UDim2.new(1, -16, 0, 12),
+    Position = UDim2.fromOffset(0, 12),
+    Size = UDim2.new(1, 0, 0, 14),
     BackgroundTransparency = 1, Text = "Keybinds",
-    TextSize = 11, TextColor3 = Theme.TextActive,
-    TextXAlignment = Enum.TextXAlignment.Left,
+    TextSize = 12, TextColor3 = Theme.TextActive,
+    TextXAlignment = Enum.TextXAlignment.Center,
     TextYAlignment = Enum.TextYAlignment.Center,
     ZIndex = 184 }, "bold")
 
 -- Inner Tab frame — holds the per-bind labels. INNER 5-stroke border + TabBg.
--- AutomaticSize.Y so it grows as binds become active. Anchored 10px below the
--- title, 10px gap on each side (matches base G2L proportions).
+-- Fixed size from the base G2L (161x40 sub-frame inside the 212x113 outer).
+-- Position centered horizontally below the title.
 local KeybindTab = mk("Frame", { Parent = KeybindFrame, ZIndex = 181,
-    Position = UDim2.fromOffset(10, 26),
-    Size = UDim2.new(1, -20, 0, 14),
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0, 36),
+    Size = UDim2.fromOffset(172, 67),
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
-    AutomaticSize = Enum.AutomaticSize.Y })
+    ClipsDescendants = true })
 applyLayeredStrokes(KeybindTab, "inner")
-uipad(KeybindTab, 4)
-listLayout(KeybindTab, Enum.FillDirection.Vertical, 1)
-
--- Grow the OUTER frame so its bottom edge sits 10px below KeybindTab —
--- mirrors the 10px bottom chrome from the base watermark/keybinds spec.
-mk("UIPadding", { Parent = KeybindFrame,
-    PaddingBottom = UDim.new(0, 10) })
+uipad(KeybindTab, 6)
+listLayout(KeybindTab, Enum.FillDirection.Vertical, 2)
 
 -- Drag the HUD from anywhere on its surface (the title strip is too small
 -- to grab reliably on a 1-line bind list).
@@ -3006,11 +3008,13 @@ do
             local lbl = kp._hudLabel
             if active then
                 lbl = ensureHudLabel(kp)
-                -- Base G2L format: "[KEY name : mode]" — key + friendly name
-                -- followed by current mode (toggle / hold / always).
+                -- Base G2L format (verbatim from sanyo's keybinds spec):
+                --   "[ KEY ] name : mode"
+                -- — bracketed key with INSIDE spaces, then friendly label,
+                -- then mode (lowercase) after a colon.
                 local modeStr = (kp.Mode or "Toggle"):lower()
-                lbl.Text = "[" .. (kp.Value or "-") .. " " ..
-                           (kp._label or "") .. " : " .. modeStr .. "]"
+                lbl.Text = "[ " .. (kp.Value or "-") .. " ] " ..
+                           (kp._label or "") .. " : " .. modeStr
                 if not lbl.Visible then lbl.Visible = true end
             elseif lbl and lbl.Visible then
                 lbl.Visible = false
@@ -3129,9 +3133,11 @@ function Library:CreatePlaceholderBox(config)
     -- 10px bottom chrome (mirrors the 10px top above the rainbow strip).
     mk("UIPadding", { Parent = outer, PaddingBottom = UDim.new(0, 10) })
 
-    -- Rainbow strip + 1px shadow on OUTER (sibling of main).
+    -- Rainbow strip + 1px shadow on OUTER (sibling of main). Y=6/7 matches
+    -- the menu/watermark rainbow vertical placement (was Y=4/5 — user
+    -- reported it sat 2px too high relative to the rest of the chrome).
     local phRb = mk("Frame", { Parent = outer, ZIndex = 196,
-        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
     do
         local g = Instance.new("UIGradient"); g.Name = "\0"
@@ -3143,16 +3149,16 @@ function Library:CreatePlaceholderBox(config)
         g.Parent = phRb
     end
     mk("Frame", { Parent = outer, ZIndex = 196,
-        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
         BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
         BorderSizePixel = 0 })
 
     -- Main frame sits below the rainbow. AutomaticSize.Y is driven entirely
     -- by content; main has its own UIPadding for breathing room around the
-    -- label list + title.
+    -- label list + title. Y=14 clears the rainbow row at Y=6+2.
     local main = mk("Frame", { Parent = outer,
         Size = UDim2.new(1, -20, 0, 0),
-        Position = UDim2.fromOffset(10, 12),
+        Position = UDim2.fromOffset(10, 14),
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 196 })
     applyLayeredStrokes(main, "inner")
