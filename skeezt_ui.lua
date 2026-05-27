@@ -1,3 +1,44 @@
+--[[ ════════════════════════════════════════════════════════════════════════
+    nachtara | UI v3-gs — GameSense IMGUI port, top tabs (no icons)
+    Date: 2026-05-26
+
+    BASIS:
+      Widget pixel-cadence cloned 1:1 from skeezt's imgui_widgets.cpp / imgui.cpp:
+        Checkbox    → imgui_widgets.cpp:1459 (8x8 inset, vertical gradient,
+                       inactive 76/51, hover 86/61, checked = MenuTheme/alpha)
+        Slider      → imgui_widgets.cpp:3068 (52/68 track, 62/78 hover,
+                       MenuTheme fill, centered bold value, label above)
+        GroupBox    → imgui.cpp:4764 GroupBoxTitleEx (title chip OVER border)
+        MenuTheme   → imgui_draw.cpp:181  RGB(147, 197, 57) — lime green
+      Window outline pulled from sanyo's GameScat base (5-stroke layered
+      via UIStroke.BorderOffset, palette 13/61/41/61/13).
+
+    LAYOUT DEVIATION:
+      Tabs are HORIZONTAL at the TOP of the window (Linoria style, no icons)
+      instead of GS's left-side vertical icon sidebar. Rainbow strip + 1px
+      shadow live at Y=6 of the OUTER window (not inside any padding area).
+
+    ASSETS — three local font caches in this workspace are preferred over
+    HTTP fetches (already present from prior scripts):
+        VerdanaBoldAF.font     — Bold (groupbox titles, slider values, tabs)
+        VerdanaNomarl_AF.font  — Regular (widget labels, dropdowns)
+        SmallestPixel.font     — Tiny pixel font (keybind text "[F]" / "[-]")
+      Falls back to github (sanyoner/fonts) then to Roblox builtin Verdana.
+      Background image (skeezt_menu_bg.png) cached locally too, github fallback.
+
+    PUBLIC API (parity with nachtara_ui.lua v2 — drop-in compatible):
+      Library:CreateWindow{Title=…, Size=…}
+      Window:AddTab(name)
+      Tab:AddLeftGroupbox(name)  /  AddRightGroupbox(name)
+      Groupbox:AddToggle / AddSlider / AddButton / AddDropdown
+              AddColorPicker / AddKeyPicker / AddLabel / AddDivider
+              AddDependencyBox
+      Toggle's chain: AddColorPicker / AddKeyPicker (inline next to row)
+      Library.Toggles[id].Value / :SetValue(v)
+      Library.Options[id].Value / :SetValue(v)
+      Library:Toggle() / :Unload() / :SetToggleKey(key)
+═════════════════════════════════════════════════════════════════════════ ]]
+
 local _cloneref = (type(cloneref) == "function") and cloneref or function(x) return x end
 local Players          = _cloneref(game:GetService("Players"))
 local CoreGui          = _cloneref(game:GetService("CoreGui"))
@@ -645,11 +686,10 @@ local function attachWidgets(target, body)
         opt = opt or {}
         local FLAT      = Color3.fromRGB(34, 34, 34)
         local FLAT_HOV  = Color3.fromRGB(44, 44, 44)
-        -- Button is text-LESS (Text = "") so the visible label lives in
-        -- a child TextLabel we can position independently. The label sits
-        -- 2px above the button's vertical centerline per user spec
-        -- ("button labels 2px höher, nicht button ansich sondern nur
-        -- der text").
+        -- Button is text-LESS so the visible label lives in a child
+        -- TextLabel we can position independently. Label sits 1px BELOW
+        -- the button's vertical centerline (user reverted the earlier
+        -- 2px-up direction: "buttons label doch 1px runter").
         local btn = mk("TextButton", { Parent = body,
             Size = UDim2.new(1, 0, 0, 14),
             BackgroundColor3 = FLAT, BorderSizePixel = 0,
@@ -658,7 +698,7 @@ local function attachWidgets(target, body)
         })
         inkBorder(btn)
         mkText("TextLabel", { Parent = btn,
-            Position = UDim2.fromOffset(0, -2),
+            Position = UDim2.fromOffset(0, 1),
             Size = UDim2.fromScale(1, 1),
             BackgroundTransparency = 1,
             Text = opt.Text or id, TextSize = 12,
@@ -800,8 +840,10 @@ local function attachWidgets(target, body)
             valTxt.Text = fmt(v) .. sfx
             -- Center on the grab tip (right edge of fill). Anchor (0.5, 0.5)
             -- means valTxt.Position.X.Scale = fillFrac sits its center on
-            -- the fill's right edge.
-            valTxt.Position = UDim2.new(frac, 0, 0.5, 0)
+            -- the fill's right edge. Y offset -1 lifts the value glyphs
+            -- 1px above the bar center per user spec ("slider value text
+            -- 1 px höher").
+            valTxt.Position = UDim2.new(frac, 0, 0.5, -1)
             if not supp then safeCallback(self.Callback, v) end
         end
         slider:SetValue(val, true)
@@ -878,8 +920,10 @@ local function attachWidgets(target, body)
         -- the popup). TextColor3 starts as TextActive and is repainted by
         -- refresh() each time the value changes — TextActive when there's
         -- a real selection, TextDim when the value is "None"/empty.
+        -- Y=-1 nudges the selection text 1px up per user spec
+        -- ("selected dropdown text 1px höher").
         local valLbl = mkText("TextLabel", { Parent = mainBtn,
-            Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(5, 0),
+            Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(5, -1),
             BackgroundTransparency = 1, Text = "", TextSize = 12,
             TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -1586,14 +1630,14 @@ local function attachWidgets(target, body)
         applyFont(field, "reg")
         applyTextOutline(field)
         inkBorder(field)
-        -- PaddingBottom = 4 with PaddingTop = 0 shifts the vertically-
-        -- centered text 2px UP within the 14px-tall field: the renderable
-        -- area shrinks from 0..14 → 0..10, so TextYAlignment.Center lands
-        -- at Y=5 instead of Y=7. Matches user spec: "input fields text
-        -- 2px höher, auch hier nicht das input ansich sondern nur der text".
+        -- PaddingTop = 2 with PaddingBottom = 0 shifts the vertically-
+        -- centered text 1px DOWN within the 14px field: renderable area
+        -- 2..14 (12 tall), TextYAlignment.Center lands at Y=8 instead of
+        -- the natural Y=7. User reverted earlier 2px-up direction:
+        -- "input field doch 1px runter".
         local pad = Instance.new("UIPadding"); pad.Name = "\0"
         pad.PaddingLeft   = UDim.new(0, 5); pad.PaddingRight  = UDim.new(0, 5)
-        pad.PaddingTop    = UDim.new(0, 0); pad.PaddingBottom = UDim.new(0, 4)
+        pad.PaddingTop    = UDim.new(0, 2); pad.PaddingBottom = UDim.new(0, 0)
         pad.Parent = field
 
         local input = { Type = "Input", Value = opt.Default or "", Callback = opt.Callback }
@@ -1818,25 +1862,29 @@ function Library:CreateWindow(opts)
         -- Title chip — TabBg (the column background behind the groupbox)
         -- "erases" the inner-stroke band visible at the top of gb by
         -- covering it with the surrounding color, so the title text reads
-        -- on a clean background instead of crossing through stroke pixels.
-        -- Per user spec: "use a frame, make it the same color as the
-        -- background, scale it up to the text bound and position it in
-        -- the middle of the text" — chip width is now the EXACT measured
-        -- text width (no extra breathing), so the outline band is opened
-        -- only as wide as the text actually is.
-        -- chipW gets +2 over titleW so it covers the leading/trailing
-        -- glyph anti-aliasing pixels at the text edges; without that,
-        -- the outermost subpixel of the first/last glyph would still
-        -- touch the stroke band.
-        local chipW = titleW + 2
+        -- on a clean background.
+        -- Geometry per user spec ("die cutout background soll 2px runter,
+        -- und 2px länger an beiden seiten, damit man den cutout sieht"):
+        --   chipW = titleW + 6  (2px breathing on each side past the text
+        --                        + 2px extra each side so the TabBg cutout
+        --                        is visibly LARGER than the text, making
+        --                        the "carved-out" border effect obvious
+        --                        rather than the chip hugging the text)
+        --   chip Y = -2  (was -4 — moved 2px DOWN; the chip now sits
+        --                lower on the inner-stroke band so it covers
+        --                the stroke at the text's actual vertical center,
+        --                not above it)
+        -- chip X = 8 (was 10) so the chip+text stay centered after the
+        -- +4 total width increase.
+        local chipW = titleW + 6
         mk("Frame", { Parent = wrap,
             Size = UDim2.fromOffset(chipW, 6),
-            Position = UDim2.fromOffset(10, -4),
+            Position = UDim2.fromOffset(8, -2),
             BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
             ZIndex = 6 })
         mkText("TextLabel", { Parent = wrap,
             Size = UDim2.fromOffset(chipW, 12),
-            Position = UDim2.fromOffset(10, -7),
+            Position = UDim2.fromOffset(8, -7),
             BackgroundTransparency = 1,
             Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Center,
@@ -1896,15 +1944,17 @@ function Library:CreateWindow(opts)
                 titleW = (ok and b and b.X > 0) and math.ceil(b.X)
                       or measureText(titleStr, 11, "bold")
             end
-            local chipW = titleW + 2
+            -- Same chipW + Y=-2 geometry as Groupbox titles (see comment
+            -- in buildGroupbox above for the rationale).
+            local chipW = titleW + 6
             mk("Frame", { Parent = wrap,
                 Size = UDim2.fromOffset(chipW, 6),
-                Position = UDim2.fromOffset(10, -4),
+                Position = UDim2.fromOffset(8, -2),
                 BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
                 ZIndex = 6 })
             mkText("TextLabel", { Parent = wrap,
                 Size = UDim2.fromOffset(chipW, 12),
-                Position = UDim2.fromOffset(10, -7),
+                Position = UDim2.fromOffset(8, -7),
                 BackgroundTransparency = 1,
                 Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
                 TextXAlignment = Enum.TextXAlignment.Center,
@@ -2539,22 +2589,28 @@ function Library:Notify(text, duration)
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
-    -- Measure the rendered text width. Use BOTH the live label TextBounds
-    -- AND a TextService:GetTextSize estimate, take the max — TextBounds
-    -- can return 0 on fresh labels with pending custom-font loads, and
-    -- the heuristic occasionally undershoots; max() of both never
-    -- undershoots. Chrome budget +16: 4+4 outer→main + 4+4 main→label.
-    -- +2 safety margin so Roblox's subpixel rounding doesn't truncate
-    -- the last glyph. Floor 60px keeps a 1-char toast visible.
-    local textW = lbl.TextBounds.X
+    -- Measure text via TextService:GetTextSize as PRIMARY source. The
+    -- previous flow read lbl.TextBounds, but TextBounds on a label with
+    -- TextTruncate.AtEnd returns the TRUNCATED width (Roblox docs:
+    -- "bounding rectangle of the rendered text" — and rendered means
+    -- post-truncation). That created a positive-feedback loop where
+    -- every Notify came back the same minimum width because the label
+    -- started at width 0, text got truncated to nothing, TextBounds
+    -- returned 0, fallback fired (60px floor). Hence "alle gleich gross".
+    -- TextService is synchronous + truncation-agnostic.
+    -- Chrome budget +16: 4+4 outer→main + 4+4 main→label.
     local TS = game:GetService("TextService")
+    local textW
     local ok, b = pcall(function()
         return TS:GetTextSize(text, 11, Enum.Font.SourceSans,
             Vector2.new(99999, 14))
     end)
-    if ok and b and b.X > textW then textW = b.X end
-    if textW < 1 then textW = measureText(text, 11, "reg") end
-    local w = math.max(60, math.ceil(textW) + 18)
+    if ok and b and b.X > 0 then
+        textW = b.X
+    else
+        textW = measureText(text, 11, "reg")
+    end
+    local w = math.max(60, math.ceil(textW) + 16)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -3213,21 +3269,20 @@ local WatermarkMain = mk("Frame", { Parent = Watermark,
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
--- Label fills Main with 5px padding each side per user spec ("5 pixel
--- abstand vom text start zu border links und 5px von textende zu border
--- rechts"). Combined with Main's 10px outer-band inset, the user-visible
--- text-to-outer-border distance is 15px on each side, with the OUTER
--- 5-stroke chrome rendering inside that 15px gap.
+-- Label fills Main with 4px padding each side per user spec.
 -- Y=-1 nudges the label one pixel up from Main's vertical centerline so
 -- the glyph baseline sits visually flush with the inner-stroke top edge.
+-- TextTruncate REMOVED — it caused TextBounds to return the truncated
+-- width (post-render), which made SetWatermark's measure-then-size loop
+-- accumulate padding as fields were added (positive-feedback bug the
+-- user reported: "wird mehr abstand desto mehr man auswählt").
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
-    Position = UDim2.fromOffset(5, -1),
-    Size = UDim2.new(1, -10, 1, 0),
+    Position = UDim2.fromOffset(4, -1),
+    Size = UDim2.new(1, -8, 1, 0),
     BackgroundTransparency = 1, Text = "",
     TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
     TextYAlignment = Enum.TextYAlignment.Center,
-    TextTruncate = Enum.TextTruncate.AtEnd,
 }, "bold")
 -- ══════════════════════════════════════════════════════════════════════════
 -- KEYBIND HUD — draggable on-screen panel that auto-shows every KeyPicker's
@@ -3656,32 +3711,34 @@ function Library:SetWatermark(text)
     Watermark.Visible = (text ~= nil and text ~= "")
     if Watermark.Visible then
         pcall(function()
-            -- Robust width measurement. The previous TextBounds-only flow
-            -- showed "..." (truncate) when the live label hadn't finished
-            -- font binding before SetWatermark fired — TextBounds returned
-            -- 0 or a stale value, fallback measureText undershot, the
-            -- watermark stayed too narrow.
-            -- Fix: take the MAX of three sources so we never undershoot:
-            --   1) TS:GetTextSize with SourceSansBold (close-metric to
-            --      our custom Verdana Bold, synchronous, robust)
-            --   2) live label TextBounds.X (accurate when font is loaded)
-            --   3) measureText heuristic (always available)
-            -- Chrome budget = 10px outer-band inset each side + 5px
-            -- label padding each side = 30 total — matches the
-            -- watermarkLbl layout exactly. Floor 120px keeps a single-
-            -- field watermark readable.
+            -- ONLY use TextService:GetTextSize. The previous max(TextBounds,
+            -- TextService, measureText) approach hit two compounding bugs:
+            --   1. TextBounds reflects the TRUNCATED rendered width when
+            --      TextTruncate is active — so as the label grew, TextBounds
+            --      grew, watermark grew, TextBounds reported the now-wider
+            --      bounds, watermark grew more. Removed TextTruncate from
+            --      watermarkLbl to break this feedback path.
+            --   2. measureText's 0.62 multiplier overshoots Verdana Bold's
+            --      actual ~0.55 advance, so its result was always 10-15%
+            --      too wide. Taking the max() with it meant every call
+            --      picked the overshoot. Drop it from the path entirely.
+            -- TextService:GetTextSize w/ SourceSansBold is metric-close to
+            -- our custom Verdana Bold (~±2px on a 30-char string) and is
+            -- synchronous + truncation-agnostic.
+            -- Chrome budget +28 = 10+10 outer-band inset + 4+4 label-to-main
+            -- padding (matches the watermarkLbl layout exactly). Floor 120px.
             local TS = game:GetService("TextService")
-            local textW = 0
+            local textW
             local ok, b = pcall(function()
                 return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
                     Vector2.new(99999, 14))
             end)
-            if ok and b and b.X > textW then textW = b.X end
-            local tb = watermarkLbl.TextBounds.X
-            if tb > textW then textW = tb end
-            local heur = measureText(text, 12, "bold")
-            if heur > textW then textW = heur end
-            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 30), 54)
+            if ok and b and b.X > 0 then
+                textW = b.X
+            else
+                textW = measureText(text, 12, "bold")
+            end
+            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 28), 54)
         end)
     end
 end
@@ -4340,35 +4397,75 @@ do
     local function buildBlockFallback()
         local m = Instance.new("Model")
         m.Name = "PreviewRig"
-        local skin   = Color3.fromRGB(244, 220, 192)
-        local shirt  = Color3.fromRGB( 80, 110, 170)
-        local pants  = Color3.fromRGB( 50,  50,  60)
-        local hair   = Color3.fromRGB( 30,  30,  30)
+        -- Standard Roblox default-avatar palette (the same colors a fresh
+        -- "Classic" Robloxian wears in Studio's Rig Builder → R15 Block):
+        --   Head + Arms + Hands  → Bright yellow (245, 205, 48)
+        --   UpperTorso + LowerTorso → Bright green  (40, 127, 71)
+        --   UpperLeg + LowerLeg + Foot → Navy blue  (40, 71, 173)
+        local yellow = Color3.fromRGB(245, 205, 48)
+        local green  = Color3.fromRGB( 40, 127, 71)
+        local navy   = Color3.fromRGB( 40,  71, 173)
         local function part(name, size, pos, color)
             local p = Instance.new("Part")
             p.Name = name; p.Size = size; p.Position = pos
             p.Color = color; p.Material = Enum.Material.SmoothPlastic
             p.Anchored = true; p.CanCollide = false; p.CanQuery = false
-            p.CanTouch = false; p.Massless = true; p.TopSurface = Enum.SurfaceType.Smooth
+            p.CanTouch = false; p.Massless = true
+            p.TopSurface = Enum.SurfaceType.Smooth
             p.BottomSurface = Enum.SurfaceType.Smooth
             p.Parent = m
             return p
         end
-        -- Approximate R15 proportions. Origin at HRP center (Y=3).
-        local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1), Vector3.new(0, 3, 0), skin)
+
+        -- ─── Standard Roblox R15 Block dimensions ──────────────────────────
+        -- Matches Studio's "Rig Builder → R15 Block" output 1:1:
+        --   Head            2 × 1     × 1
+        --   UpperTorso      2 × 1.225 × 1
+        --   LowerTorso      2 × 0.775 × 1
+        --   Upper limbs     1 × 1.225 × 1
+        --   Lower limbs     1 × 1.225 × 1
+        --   Hands / Feet    1 × 0.4   × 1
+        -- Vertical layout from ground (Y=0) up:
+        --   Feet:        0      .. 0.4
+        --   LowerLeg:    0.4    .. 1.625    center 1.0125
+        --   UpperLeg:    1.625  .. 2.85     center 2.2375
+        --   LowerTorso:  2.85   .. 3.625    center 3.2375
+        --   UpperTorso:  3.625  .. 4.85     center 4.2375
+        --   Head:        4.85   .. 5.85     center 5.35
+        -- HRP centered at Y=3 (above LowerTorso top, inside UpperTorso) so
+        -- the preview camera's orbit center sits at character mid-height.
+        local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
+            Vector3.new(0, 3, 0), green)
         hrp.Transparency = 1
-        part("LowerTorso",    Vector3.new(2,   1.0, 1.0), Vector3.new( 0,    2.55, 0), pants)
-        part("UpperTorso",    Vector3.new(2,   1.2, 1.0), Vector3.new( 0,    3.65, 0), shirt)
-        part("Head",          Vector3.new(1.2, 1.2, 1.2), Vector3.new( 0,    4.85, 0), skin)
-        part("Hair",          Vector3.new(1.3, 0.4, 1.3), Vector3.new( 0,    5.55, 0), hair)
-        part("LeftUpperArm",  Vector3.new(0.8, 1.0, 0.8), Vector3.new(-1.4,  3.85, 0), shirt)
-        part("LeftLowerArm",  Vector3.new(0.8, 1.1, 0.8), Vector3.new(-1.4,  2.8,  0), skin)
-        part("RightUpperArm", Vector3.new(0.8, 1.0, 0.8), Vector3.new( 1.4,  3.85, 0), shirt)
-        part("RightLowerArm", Vector3.new(0.8, 1.1, 0.8), Vector3.new( 1.4,  2.8,  0), skin)
-        part("LeftUpperLeg",  Vector3.new(0.9, 1.0, 1.0), Vector3.new(-0.5,  1.55, 0), pants)
-        part("LeftLowerLeg",  Vector3.new(0.9, 1.1, 1.0), Vector3.new(-0.5,  0.5,  0), pants)
-        part("RightUpperLeg", Vector3.new(0.9, 1.0, 1.0), Vector3.new( 0.5,  1.55, 0), pants)
-        part("RightLowerLeg", Vector3.new(0.9, 1.1, 1.0), Vector3.new( 0.5,  0.5,  0), pants)
+
+        -- Torso (two segments per R15 spec).
+        part("LowerTorso",  Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0), green)
+        part("UpperTorso",  Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0), green)
+
+        -- Head — 2×1×1 block centered above UpperTorso.
+        part("Head",        Vector3.new(2, 1, 1), Vector3.new(0, 5.35, 0), yellow)
+
+        -- Arms hang at the sides. Shoulder Y = UpperTorso top = 4.85.
+        --   UpperArm:  Y 3.625..4.85   center 4.2375
+        --   LowerArm:  Y 2.4..3.625    center 3.0125
+        --   Hand:      Y 2.0..2.4      center 2.2
+        -- X = ±1.5 so the inside arm face (X=±1) touches the torso side.
+        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0), yellow)
+        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0), yellow)
+        part("LeftHand",      Vector3.new(1, 0.4,   1), Vector3.new(-1.5, 2.2,    0), yellow)
+        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0), yellow)
+        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0), yellow)
+        part("RightHand",     Vector3.new(1, 0.4,   1), Vector3.new( 1.5, 2.2,    0), yellow)
+
+        -- Legs. Hip Y = LowerTorso bottom = 2.85. X = ±0.5 so legs sit
+        -- under the torso (1-stud wide leg, body 2-stud wide).
+        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0), navy)
+        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0), navy)
+        part("LeftFoot",      Vector3.new(1, 0.4,   1), Vector3.new(-0.5, 0.2,    0), navy)
+        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0), navy)
+        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0), navy)
+        part("RightFoot",     Vector3.new(1, 0.4,   1), Vector3.new( 0.5, 0.2,    0), navy)
+
         m.PrimaryPart = hrp
         return m
     end
@@ -4479,10 +4576,10 @@ do
     -- (what main.lua uses for live enemies) don't show inside viewports.
     local CHAMS_PREVIEW_PARTS = {
         "Head", "UpperTorso", "LowerTorso",
-        "LeftUpperArm", "LeftLowerArm",
-        "RightUpperArm", "RightLowerArm",
-        "LeftUpperLeg", "LeftLowerLeg",
-        "RightUpperLeg", "RightLowerLeg",
+        "LeftUpperArm",  "LeftLowerArm",  "LeftHand",
+        "RightUpperArm", "RightLowerArm", "RightHand",
+        "LeftUpperLeg",  "LeftLowerLeg",  "LeftFoot",
+        "RightUpperLeg", "RightLowerLeg", "RightFoot",
     }
     local CHAMS_PREVIEW_EDGES = {
         {1,2},{2,3},{3,4},{4,1},
