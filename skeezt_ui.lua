@@ -3839,14 +3839,25 @@ end
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- ESPPreview — draggable preview window with a 3D rotatable R15 character
--- in a ViewportFrame, surrounded by the same ESP box overlay the real
--- script renders. Lets users dial in ESP settings without needing visible
--- enemies in-game.
+-- in a ViewportFrame, surrounded by the same ESP overlay the real script
+-- renders. Lets users dial in ESP settings without needing visible enemies.
+--
+-- Window chrome MATCHES the main UI: 5-stroke outer (BG WindowBg) + rainbow
+-- strip + 1px shadow + inner Content frame with inner 5-stroke + TabBg.
+-- That parity was the first user complaint — the standalone window-chrome
+-- looked nothing like the rest of the UI.
+--
+-- ESP overlay is built from THREE UIStroke borders (outer 1px black,
+-- middle 1px colored, inner 1px black) on transparent frames — same as
+-- the real ESP's outerBox/fillBox/innerBox. Previously the boxes were
+-- filled rectangles that COVERED the character when boxOn went opaque —
+-- that was the "character disappears" bug. UIStrokes only paint the
+-- perimeter so the viewport stays visible behind them.
 --
 -- Drag the character: hold MB1 inside the viewport and move the mouse —
 -- the character spins on its Y axis (yaw) following horizontal motion,
 -- and pitches on the X axis (clamped to ±60°) following vertical motion.
--- Right-click drag pans the camera up/down.
+-- Mouse wheel inside the viewport zooms.
 -- ══════════════════════════════════════════════════════════════════════════
 do
     local Players      = game:GetService("Players")
@@ -3878,9 +3889,11 @@ do
     local Outer, Viewport, BoxOverlay, Labels, Healthbars, RotationState
     local boxRot, fillRot = 0, 0
 
-    -- Build a Camera + clone of LocalPlayer.Character (or a placeholder rig)
-    -- into a WorldModel inside the ViewportFrame. Returns (worldModel, char,
-    -- camera, hrp, head). Rebuilt whenever the character respawns.
+    -- Build a Camera + clone of LocalPlayer.Character into a WorldModel
+    -- inside the ViewportFrame. Yields/waits for CharacterAdded if necessary
+    -- so the preview ALWAYS renders the real R15 player — no block-figure
+    -- fallback (user explicitly demanded "use an real r15 character, not
+    -- this pixel dude").
     local function buildSceneInto(vp)
         for _, c in vp:GetChildren() do
             if c:IsA("WorldModel") or c:IsA("Camera") then
@@ -3895,69 +3908,57 @@ do
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        -- Try to clone the local player's character. Falls back to building
-        -- a simple block-figure if no character (loadout screen / pre-spawn /
-        -- spectator state). Archivable=true on the original is required for
-        -- :Clone() to succeed; we set it back to its previous value after.
-        local char
+        -- buildSceneInto is called from RenderStepped via update() — we
+        -- can NOT yield here (would error the render callback). If
+        -- LocalPlayer.Character isn't available, return an empty scene;
+        -- the CharacterAdded listener wired up in build() will call
+        -- rebuildScene() asynchronously once the real char loads.
         local origChar = LocalPlayer.Character
-        if origChar then
-            local origArchivable = origChar.Archivable
-            pcall(function() origChar.Archivable = true end)
-            local ok, clone = pcall(origChar.Clone, origChar)
-            pcall(function() origChar.Archivable = origArchivable end)
-            if ok and clone then
-                char = clone
-                -- Strip scripts so the cloned character can't run anything
-                -- inside our viewport. Also drop any BillboardGui ESP we
-                -- attached to the real character so the preview's overlay
-                -- doesn't render twice.
-                for _, d in char:GetDescendants() do
-                    if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
-                       or d:IsA("BillboardGui") then
-                        pcall(d.Destroy, d)
-                    end
-                end
-                -- Reset transparency so the cloned char isn't hidden by the
-                -- ThirdPerson LTM flips we did on the live one.
-                for _, p in char:GetDescendants() do
-                    if p:IsA("BasePart") then
-                        pcall(function()
-                            p.LocalTransparencyModifier = 0
-                            p.Anchored = true
-                            p.CanCollide = false
-                        end)
-                    end
-                end
+        if not origChar then return wm, nil, cam, nil, nil end
+
+        local origArchivable = origChar.Archivable
+        pcall(function() origChar.Archivable = true end)
+        local ok, clone = pcall(origChar.Clone, origChar)
+        pcall(function() origChar.Archivable = origArchivable end)
+        if not ok or not clone then return wm, nil, cam, nil, nil end
+
+        local char = clone
+        -- Strip scripts so the cloned character can't run anything inside
+        -- the viewport. Drop any BillboardGui ESP attached to the real
+        -- character so the preview overlay doesn't render twice. Strip
+        -- Highlight/Decals on the real char that the script might have
+        -- added — we want the BARE character for ESP visualization.
+        for _, d in char:GetDescendants() do
+            if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
+               or d:IsA("BillboardGui") or d:IsA("Highlight") then
+                pcall(d.Destroy, d)
             end
         end
-
-        if not char then
-            -- Generic R15-ish placeholder. Simple sized capsules so the user
-            -- still sees a humanoid silhouette to position ESP around.
-            char = Instance.new("Model")
-            char.Name = "Placeholder"
-            local function part(name, sz, pos, col)
-                local p = Instance.new("Part")
-                p.Name = name; p.Anchored = true; p.CanCollide = false
-                p.Size = sz; p.CFrame = CFrame.new(pos)
-                p.Color = col; p.Material = Enum.Material.Plastic
-                p.TopSurface = Enum.SurfaceType.Smooth
-                p.BottomSurface = Enum.SurfaceType.Smooth
-                p.Parent = char
-                return p
+        -- Reset BOTH Transparency AND LocalTransparencyModifier on every
+        -- BasePart. ThirdPerson + Chams + various game systems set one or
+        -- both to non-zero on the live character; the clone inherits them
+        -- and would render invisible. Explicit reset = guaranteed visible.
+        for _, p in char:GetDescendants() do
+            if p:IsA("BasePart") then
+                pcall(function()
+                    p.Transparency = 0
+                    p.LocalTransparencyModifier = 0
+                    p.Anchored = true
+                    p.CanCollide = false
+                end)
+            elseif p:IsA("Decal") then
+                pcall(function() p.Transparency = 0 end)
             end
-            local skin = Color3.fromRGB(204, 142, 105)
-            part("Head", Vector3.new(1, 1, 1), Vector3.new(0, 4.5, 0), skin)
-            local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
-                Vector3.new(0, 3, 0), Color3.fromRGB(40, 40, 80))
-            char.PrimaryPart = hrp
-            part("UpperTorso", Vector3.new(2, 1, 1), Vector3.new(0, 3.5, 0), Color3.fromRGB(40, 40, 80))
-            part("LowerTorso", Vector3.new(2, 1, 1), Vector3.new(0, 2.5, 0), Color3.fromRGB(40, 40, 80))
-            part("LeftUpperArm",  Vector3.new(1, 1.5, 1), Vector3.new(-1.5,  3.25, 0), skin)
-            part("RightUpperArm", Vector3.new(1, 1.5, 1), Vector3.new( 1.5,  3.25, 0), skin)
-            part("LeftUpperLeg",  Vector3.new(1, 1.5, 1), Vector3.new(-0.5,  1.25, 0), Color3.fromRGB(50, 50, 50))
-            part("RightUpperLeg", Vector3.new(1, 1.5, 1), Vector3.new( 0.5,  1.25, 0), Color3.fromRGB(50, 50, 50))
+        end
+        -- The Humanoid stays so accessories animate / sit correctly. Just
+        -- disable physics-driven state changes so the rig doesn't fall.
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                hum.PlatformStand = true
+                hum.AutoRotate = false
+                hum:ChangeState(Enum.HumanoidStateType.Physics)
+            end)
         end
 
         char.Parent = wm
@@ -3969,12 +3970,26 @@ do
         return wm, char, cam, hrp, head
     end
 
+    -- Forward declarations so build() can reference rebuildScene + update
+    -- in callbacks (CharacterAdded listener wires up rebuildScene; the
+    -- RenderStepped loop in Show() drives update). Lua resolves these as
+    -- the same locals at call time once the assignments below run.
+    local rebuildScene, update
+
     -- One-time window build. Called the first time Show() fires.
+    -- Layout matches the main Window 1:1:
+    --   Outer (5 OUTER strokes, BG WindowBg)
+    --   ├─ Rainbow strip at top (6, 6)
+    --   ├─ Rainbow shadow (6, 7)
+    --   ├─ Title label centered (matches loader/main title slot)
+    --   └─ Content (5 INNER strokes, BG TabBg)
+    --        └─ ContentInner (10px padding inset)
+    --             ├─ ViewportFrame (centered)
+    --             └─ ESP overlay (UIStroke borders, NOT filled rects)
     local function build()
         if Outer then return end
 
-        -- Outer + 5-stroke composite borders (matches the main Window's chrome).
-        local W, H = 280, 360
+        local W, H = 300, 380
         Outer = mk("Frame", { Parent = ScreenGui,
             AnchorPoint = Vector2.new(0, 0),
             Position = UDim2.new(1, -(W + 80), 0, 80),
@@ -3983,36 +3998,53 @@ do
             Visible = false, ZIndex = 230, Active = true })
         applyLayeredStrokes(Outer, "outer")
 
-        -- Title bar (drag handle area).
-        local titleBar = mk("Frame", { Parent = Outer,
-            Size = UDim2.new(1, -14, 0, 22), Position = UDim2.fromOffset(7, 7),
-            BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 231 })
-        mkText("TextLabel", { Parent = titleBar, ZIndex = 232,
-            Position = UDim2.fromOffset(8, 0),
-            Size = UDim2.new(1, -16, 1, 0),
-            BackgroundTransparency = 1, Text = "ESP Preview",
-            TextSize = 12, TextColor3 = Theme.TextActive,
-            TextXAlignment = Enum.TextXAlignment.Left,
+        -- Rainbow + shadow at TOP (matches menu/watermark Y=6/7 placement)
+        local rb = mk("Frame", { Parent = Outer, ZIndex = 232,
+            Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
+        local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
+        rbGrad.Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0,   Theme.RainbowA),
+            ColorSequenceKeypoint.new(0.5, Theme.RainbowB),
+            ColorSequenceKeypoint.new(1,   Theme.RainbowC),
+        }
+        rbGrad.Parent = rb
+        mk("Frame", { Parent = Outer, ZIndex = 233,
+            Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
+            BorderSizePixel = 0 })
+
+        -- Title — same Y slot the main Window uses for tab labels (14, h=18)
+        mkText("TextLabel", { Parent = Outer, ZIndex = 234,
+            Position = UDim2.fromOffset(20, 14),
+            Size = UDim2.new(1, -40, 0, 18),
+            BackgroundTransparency = 1, Text = "ESP Preview", TextSize = 12,
+            TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
         }, "bold")
-        -- Accent underline on the title bar — matches the main window's
-        -- rainbow strip but trimmed since the preview is a satellite panel.
-        mk("Frame", { Parent = Outer, ZIndex = 233,
-            Size = UDim2.new(1, -14, 0, 1), Position = UDim2.fromOffset(7, 29),
-            BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
 
-        -- Inner content frame (inner 5-stroke border + TabBg).
-        local content = mk("Frame", { Parent = Outer, ZIndex = 231,
-            Position = UDim2.fromOffset(14, 36),
-            Size = UDim2.new(1, -28, 1, -50),
+        -- Content frame (BG TabBg, 5 INNER strokes) — same chrome as the
+        -- main Window's content area.
+        local Content = mk("Frame", { Parent = Outer, ZIndex = 231,
+            Position = UDim2.fromOffset(20, 36),
+            Size = UDim2.new(1, -40, 1, -56),
             BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0 })
-        applyLayeredStrokes(content, "inner")
+        applyLayeredStrokes(Content, "inner")
 
-        -- ViewportFrame in the center. 3D char gets parented inside.
+        local content = mk("Frame", { Parent = Content, ZIndex = 231,
+            Position = UDim2.fromOffset(10, 10),
+            Size = UDim2.new(1, -20, 1, -20),
+            BackgroundTransparency = 1, BorderSizePixel = 0 })
+
+        -- ViewportFrame — bigger than before so the R15 char actually shows
+        -- proportions (140x240 was too narrow for shoulders). Sized to
+        -- ~60% of content width / 75% height so labels have breathing room.
+        local VPW, VPH = 160, 260
         Viewport = mk("ViewportFrame", { Parent = content, ZIndex = 232,
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.fromScale(0.5, 0.5),
-            Size = UDim2.fromOffset(140, 240),
+            Size = UDim2.fromOffset(VPW, VPH),
             BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
             Ambient = Color3.fromRGB(180, 180, 180),
             LightColor = Color3.fromRGB(255, 255, 255),
@@ -4020,40 +4052,52 @@ do
             Active = true,
         })
 
-        -- ESP overlay — drawn ON TOP of the viewport, anchored to its edges.
-        -- Mirrors the structure of the real ESP billboard's box layers.
-        BoxOverlay = {}
+        -- ESP overlay using UIStroke borders — same structure as the real
+        -- ESP in main.lua (outerBox/fillBox/innerBox with strokes painting
+        -- the perimeter, NOT filled rectangles). The old impl used filled
+        -- rectangles that covered the viewport when opaque, hiding the
+        -- character — the user-reported "character disappears" bug.
+        BoxOverlay = { _vpw = VPW, _vph = VPH }
 
-        -- 5-stroke composite box around the viewport.
-        local function makeBoxLayer(name, posOff, sizeOff, color, zi)
+        local function makeBoxStrokeLayer(posOff, sizeOff, strokeColor, zi)
             local f = mk("Frame", { Parent = content, ZIndex = zi,
                 AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.new(0.5, 0, 0.5, 0),
-                Size = UDim2.fromOffset(140 + sizeOff, 240 + sizeOff),
-                BackgroundColor3 = color, BorderSizePixel = 0,
-                BackgroundTransparency = 1 })
-            return f
+                Position = UDim2.new(0.5, posOff, 0.5, posOff),
+                Size = UDim2.fromOffset(VPW + sizeOff, VPH + sizeOff),
+                BackgroundTransparency = 1, BorderSizePixel = 0 })
+            local s = Instance.new("UIStroke"); s.Name = "\0"
+            s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            s.LineJoinMode = Enum.LineJoinMode.Miter
+            s.Color = strokeColor
+            s.Thickness = 1
+            s.Enabled = false
+            s.Parent = f
+            return f, s
         end
 
-        BoxOverlay.outerBox = makeBoxLayer("outer",  0, 2, Color3.new(0, 0, 0), 233)
-        BoxOverlay.colorRing = makeBoxLayer("color", 0, 0, Color3.new(1, 1, 1), 234)
-        BoxOverlay.innerBox = makeBoxLayer("inner", 0, -2, Color3.new(0, 0, 0), 235)
-        BoxOverlay.fillBox  = mk("Frame", { Parent = content, ZIndex = 234,
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.fromOffset(140, 240),
-            BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
-            BackgroundTransparency = 1 })
-        local fillGrad = Instance.new("UIGradient"); fillGrad.Enabled = false; fillGrad.Parent = BoxOverlay.fillBox
-        local colorRingGrad = Instance.new("UIGradient"); colorRingGrad.Enabled = false; colorRingGrad.Parent = BoxOverlay.colorRing
+        -- 1px BLACK outline at +1 inset (matches real ESP outerBox)
+        BoxOverlay.outerBox, BoxOverlay.outlineStroke =
+            makeBoxStrokeLayer(-1, 2, Color3.new(0, 0, 0), 233)
+        -- 1px COLORED main box stroke at viewport bounds (matches mainBoxStroke)
+        BoxOverlay.fillBox, BoxOverlay.mainBoxStroke =
+            makeBoxStrokeLayer(0, 0, Color3.new(1, 1, 1), 234)
+        BoxOverlay.fillBox.BackgroundColor3 = Color3.new(1, 1, 1)
+        BoxOverlay.fillBox.BackgroundTransparency = 1
+        local fillGrad = Instance.new("UIGradient"); fillGrad.Name = "\0"
+        fillGrad.Enabled = false; fillGrad.Parent = BoxOverlay.fillBox
+        local mainBoxGrad = Instance.new("UIGradient"); mainBoxGrad.Name = "\0"
+        mainBoxGrad.Enabled = false; mainBoxGrad.Parent = BoxOverlay.mainBoxStroke
         BoxOverlay.fillGrad = fillGrad
-        BoxOverlay.colorRingGrad = colorRingGrad
+        BoxOverlay.mainBoxGrad = mainBoxGrad
+        -- 1px BLACK inline at -1 inset (matches real ESP innerBox)
+        BoxOverlay.innerBox, BoxOverlay.inlineStroke =
+            makeBoxStrokeLayer(1, -2, Color3.new(0, 0, 0), 235)
 
         -- Labels (Top / Right / Left / Down) — anchored relative to viewport.
-        local function makeLabel(anchor, align, posY, sizeX, sizeY)
+        local function makeLabel(anchor, align, xOff, yOff, sizeX, sizeY)
             local l = mkText("TextLabel", { Parent = content, ZIndex = 236,
                 AnchorPoint = anchor,
-                Position = UDim2.new(0.5, 0, 0.5, posY),
+                Position = UDim2.new(0.5, xOff, 0.5, yOff),
                 Size = UDim2.fromOffset(sizeX, sizeY),
                 BackgroundTransparency = 1, Text = "",
                 TextColor3 = Color3.new(1, 1, 1), TextSize = 12,
@@ -4062,27 +4106,61 @@ do
             return l
         end
         Labels = {
-            Top   = makeLabel(Vector2.new(0.5, 1), Enum.TextXAlignment.Center, -125, 140, 14),
-            Down  = makeLabel(Vector2.new(0.5, 0), Enum.TextXAlignment.Center,  125, 140, 14),
-            Left  = makeLabel(Vector2.new(1, 0.5), Enum.TextXAlignment.Right,  0, 50, 240),
-            Right = makeLabel(Vector2.new(0, 0.5), Enum.TextXAlignment.Left,   0, 50, 240),
+            Top   = makeLabel(Vector2.new(0.5, 1), Enum.TextXAlignment.Center, 0, -(VPH/2) - 4, VPW, 14),
+            Down  = makeLabel(Vector2.new(0.5, 0), Enum.TextXAlignment.Center, 0,  (VPH/2) + 4, VPW, 14),
+            Left  = makeLabel(Vector2.new(1, 0.5), Enum.TextXAlignment.Right, -(VPW/2) - 4, 0, 50, VPH),
+            Right = makeLabel(Vector2.new(0, 0.5), Enum.TextXAlignment.Left,   (VPW/2) + 4, 0, 50, VPH),
         }
-        Labels.Left.Position  = UDim2.new(0.5, -76, 0.5, 0)
-        Labels.Right.Position = UDim2.new(0.5,  76, 0.5, 0)
 
-        -- Healthbar (top position only — same default the real ESP uses).
-        local hb = mk("Frame", { Parent = content, ZIndex = 235,
-            AnchorPoint = Vector2.new(0.5, 1),
-            Position = UDim2.new(0.5, 0, 0.5, -123),
-            Size = UDim2.fromOffset(140, 2),
-            BackgroundColor3 = Color3.fromRGB(12, 255, 93), BorderSizePixel = 0,
-            Visible = false })
-        Healthbars = { Top = hb }
+        -- Healthbar — one frame per side, only the active one is visible.
+        -- Matches the real ESP's healthbar geometry (1px thick, runs along
+        -- the box edge with a 5px gap).
+        local function makeHB(anchor, posOff, sz)
+            local f = mk("Frame", { Parent = content, ZIndex = 235,
+                AnchorPoint = anchor,
+                Position = UDim2.new(0.5, posOff.X, 0.5, posOff.Y),
+                Size = sz,
+                BackgroundColor3 = Color3.fromRGB(12, 255, 93),
+                BorderSizePixel = 0, Visible = false })
+            local s = Instance.new("UIStroke"); s.Name = "\0"
+            s.Color = Color3.new(0, 0, 0); s.Thickness = 1
+            s.LineJoinMode = Enum.LineJoinMode.Miter
+            s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            s.Parent = f
+            local g = Instance.new("UIGradient"); g.Name = "\0"
+            g.Enabled = false; g.Parent = f
+            return f, g
+        end
+        Healthbars = {
+            Top   = (function()
+                local f, g = makeHB(Vector2.new(0.5, 1), Vector2.new(0, -(VPH/2) - 5), UDim2.fromOffset(VPW, 1))
+                return { frame = f, grad = g }
+            end)(),
+            Down  = (function()
+                local f, g = makeHB(Vector2.new(0.5, 0), Vector2.new(0,  (VPH/2) + 5), UDim2.fromOffset(VPW, 1))
+                g.Rotation = 0
+                return { frame = f, grad = g }
+            end)(),
+            Right = (function()
+                local f, g = makeHB(Vector2.new(0, 0.5), Vector2.new((VPW/2) + 5, 0), UDim2.fromOffset(1, VPH))
+                g.Rotation = 90
+                return { frame = f, grad = g }
+            end)(),
+            Left  = (function()
+                local f, g = makeHB(Vector2.new(1, 0.5), Vector2.new(-(VPW/2) - 5, 0), UDim2.fromOffset(1, VPH))
+                g.Rotation = 90
+                return { frame = f, grad = g }
+            end)(),
+        }
 
-        -- Drag the WINDOW from the title bar.
+        -- Drag the WINDOW from the title strip (top 36px, where the rainbow
+        -- + title live). Mirrors the main Window's drag handle.
+        local dragSurface = mk("Frame", { Parent = Outer, ZIndex = 237,
+            Size = UDim2.new(1, 0, 0, 36),
+            BackgroundTransparency = 1, BorderSizePixel = 0 })
         do
             local drag, ds, sp
-            track(titleBar.InputBegan:Connect(function(input)
+            track(dragSurface.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1
                    or input.UserInputType == Enum.UserInputType.Touch then
                     drag = true; ds = input.Position; sp = Outer.Position
@@ -4140,11 +4218,22 @@ do
         end))
 
         ESPPreview._content = content
-        ESPPreview._titleBar = titleBar
+
+        -- Rebuild the scene when LocalPlayer respawns — keeps the preview
+        -- showing the live character even after deaths. CharacterAdded
+        -- fires AFTER the new char is fully loaded so the clone has a
+        -- complete rig + accessories at clone time.
+        track(LocalPlayer.CharacterAdded:Connect(function()
+            -- task.defer so the new character has a moment to populate
+            -- accessories/decals before we clone it.
+            task.defer(function()
+                if ESPPreview._visible then rebuildScene() end
+            end)
+        end))
     end
 
     -- Rebuild scene whenever requested (initial show + character respawn).
-    local function rebuildScene()
+    rebuildScene = function()
         if not Viewport then return end
         local wm, char, cam, hrp, head = buildSceneInto(Viewport)
         ESPPreview._wm   = wm
@@ -4157,13 +4246,12 @@ do
     -- Per-frame: position camera around the character (orbit at RotationState
     -- distance / yaw / pitch) and update ESP overlay colors + label texts
     -- from the live Toggles/Options.
-    local function update(dt)
+    update = function(dt)
         if not Outer or not Outer.Visible then return end
-
-        -- Auto-rebuild on character respawn.
-        if not ESPPreview._char or not ESPPreview._char.Parent then
-            rebuildScene()
-        end
+        -- Character respawn is handled by the CharacterAdded listener in
+        -- build() — DON'T call rebuildScene from this RenderStepped loop
+        -- (would re-clone every frame the char is unavailable, allocating
+        -- a fresh WorldModel + camera 60 times per second).
         local char, cam = ESPPreview._char, ESPPreview._cam
         if not char or not cam then return end
 
@@ -4184,52 +4272,101 @@ do
         cam.CFrame = CFrame.new(center + Vector3.new(cx, cy, cz), center)
 
         -- ESP overlay reads SAME Toggles/Options the main ESP loop reads,
-        -- so the preview reflects the user's exact configured look.
+        -- so the preview reflects the user's exact configured look. Box
+        -- visibility is driven via UIStroke.Enabled on three strokes —
+        -- NOT BackgroundTransparency on filled frames (which would cover
+        -- the character).
         local boxOn  = Toggles.ESPBox  and Toggles.ESPBox.Value
         local fillOn = Toggles.ESPFill and Toggles.ESPFill.Value
         local hbOn   = Toggles.ESPHealthbar and Toggles.ESPHealthbar.Value
 
-        BoxOverlay.outerBox.BackgroundTransparency  = boxOn and 0 or 1
-        BoxOverlay.colorRing.BackgroundTransparency = boxOn and 0 or 1
-        BoxOverlay.innerBox.BackgroundTransparency  = boxOn and 0 or 1
+        BoxOverlay.outlineStroke.Enabled  = boxOn and true or false
+        BoxOverlay.mainBoxStroke.Enabled  = boxOn and true or false
+        BoxOverlay.inlineStroke.Enabled   = boxOn and true or false
 
         if boxOn then
             local c1 = Options.ESPBoxColor and Options.ESPBoxColor.Value or Color3.new(1, 1, 1)
             if Toggles.ESPBoxGradient and Toggles.ESPBoxGradient.Value then
                 local c2 = Options.ESPBoxColor2 and Options.ESPBoxColor2.Value or Color3.new(1, 0, 0)
-                BoxOverlay.colorRingGrad.Enabled = true
-                BoxOverlay.colorRingGrad.Color = ColorSequence.new{
+                BoxOverlay.mainBoxGrad.Enabled = true
+                BoxOverlay.mainBoxGrad.Color = ColorSequence.new{
                     ColorSequenceKeypoint.new(0, c1), ColorSequenceKeypoint.new(1, c2),
                 }
                 if Toggles.ESPBoxRotation and Toggles.ESPBoxRotation.Value then
                     local rs = Options.ESPBoxGradRot and Options.ESPBoxGradRot.Value or 90
                     boxRot = (boxRot + rs * dt) % 360
-                    BoxOverlay.colorRingGrad.Rotation = boxRot
+                    BoxOverlay.mainBoxGrad.Rotation = boxRot
                 end
-                BoxOverlay.colorRing.BackgroundColor3 = Color3.new(1, 1, 1)
+                BoxOverlay.mainBoxStroke.Color = Color3.new(1, 1, 1)
             else
-                BoxOverlay.colorRingGrad.Enabled = false
-                BoxOverlay.colorRing.BackgroundColor3 = c1
+                BoxOverlay.mainBoxGrad.Enabled = false
+                BoxOverlay.mainBoxStroke.Color = c1
             end
         end
 
+        -- Fill: paints the INTERIOR of the box at a configured transparency.
+        -- The mainBoxStroke perimeter still renders on top so the box edge
+        -- stays visible regardless of fill alpha. Mode = Static / Gradient /
+        -- Glow mirrors the real ESP exactly.
         if fillOn and boxOn then
             local fc = Options.ESPFillColor and Options.ESPFillColor.Value or Color3.new(1, 1, 1)
             local ft = Options.ESPFillTrans and Options.ESPFillTrans.Value or 0.8
+            local mode = Options.ESPFillMode and Options.ESPFillMode.Value or "Static"
             BoxOverlay.fillBox.BackgroundColor3 = fc
             BoxOverlay.fillBox.BackgroundTransparency = ft
+            if mode == "Gradient" then
+                local fc2 = Options.ESPFillColor2 and Options.ESPFillColor2.Value or Color3.new(1, 0, 0)
+                BoxOverlay.fillBox.BackgroundColor3 = Color3.new(1, 1, 1)
+                BoxOverlay.fillGrad.Enabled = true
+                BoxOverlay.fillGrad.Color = ColorSequence.new{
+                    ColorSequenceKeypoint.new(0, fc),
+                    ColorSequenceKeypoint.new(1, fc2),
+                }
+                fillRot = (fillRot + 30 * dt) % 360
+                BoxOverlay.fillGrad.Rotation = fillRot
+                BoxOverlay.fillGrad.Transparency = NumberSequence.new(0)
+            elseif mode == "Glow" then
+                local fc2 = Options.ESPFillColor2 and Options.ESPFillColor2.Value or Color3.new(1, 0, 0)
+                BoxOverlay.fillBox.BackgroundColor3 = Color3.new(1, 1, 1)
+                BoxOverlay.fillGrad.Enabled = true
+                BoxOverlay.fillGrad.Color = ColorSequence.new{
+                    ColorSequenceKeypoint.new(0, fc),
+                    ColorSequenceKeypoint.new(1, fc2),
+                }
+                BoxOverlay.fillGrad.Transparency = NumberSequence.new{
+                    NumberSequenceKeypoint.new(0, 0),
+                    NumberSequenceKeypoint.new(0.5, 1),
+                    NumberSequenceKeypoint.new(1, 0),
+                }
+            else
+                BoxOverlay.fillGrad.Enabled = false
+            end
         else
             BoxOverlay.fillBox.BackgroundTransparency = 1
+            BoxOverlay.fillGrad.Enabled = false
         end
 
-        -- Healthbar at 100% (preview is static).
-        local hb = Healthbars.Top
-        if hbOn then
-            hb.Visible = true
-            local c = Options.ESPHealthbarColor and Options.ESPHealthbarColor.Value or Color3.fromRGB(12, 255, 93)
-            hb.BackgroundColor3 = c
-        else
-            hb.Visible = false
+        -- Healthbar — show only the side picked by ESPHealthbarPos.
+        local hbPos = Options.ESPHealthbarPos and Options.ESPHealthbarPos.Value or "Top"
+        local hbC = Options.ESPHealthbarColor and Options.ESPHealthbarColor.Value or Color3.fromRGB(12, 255, 93)
+        local hbC2 = Options.ESPHealthbarColor2 and Options.ESPHealthbarColor2.Value or Color3.fromRGB(255, 0, 0)
+        for pos, hb in Healthbars do
+            if hbOn and pos == hbPos then
+                hb.frame.Visible = true
+                if Toggles.ESPHealthbarGradient and Toggles.ESPHealthbarGradient.Value then
+                    hb.grad.Enabled = true
+                    hb.grad.Color = ColorSequence.new{
+                        ColorSequenceKeypoint.new(0, hbC),
+                        ColorSequenceKeypoint.new(1, hbC2),
+                    }
+                    hb.frame.BackgroundColor3 = Color3.new(1, 1, 1)
+                else
+                    hb.grad.Enabled = false
+                    hb.frame.BackgroundColor3 = hbC
+                end
+            else
+                hb.frame.Visible = false
+            end
         end
 
         -- Labels: build per-position text from enabled toggles + fake data,
