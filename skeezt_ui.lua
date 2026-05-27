@@ -575,11 +575,18 @@ local function attachWidgets(target, body)
 
         Library.Toggles[id] = withOnChanged(toggle)
 
-        local chain = {}
-        function chain:AddColorPicker(cpid, cpopt)
+        -- Inline chain methods live directly on `toggle` (NOT a separate
+        -- `chain` table) — that way `Toggles.X:OnChanged(cb)` chained off
+        -- :AddToggle(...) still resolves to withOnChanged's :OnChanged, which
+        -- is how sanyui's API has always behaved. Previously AddToggle
+        -- returned a `chain` table with only :AddColorPicker / :AddKeyPicker,
+        -- so any `:AddToggle(...):OnChanged(...)` chain at the callsite
+        -- silently dropped the listener (root cause of "Show Active Keybinds
+        -- HUD" toggle, BhopMode dropdown handlers, etc. not firing).
+        function toggle:AddColorPicker(cpid, cpopt)
             return target._addColorPickerInline(row, cpid, cpopt)
         end
-        function chain:AddKeyPicker(kpid, kpopt)
+        function toggle:AddKeyPicker(kpid, kpopt)
             kpopt = kpopt or {}
             -- SyncToggleState=true makes the keypicker's "Toggle"-mode flip
             -- drive THIS parent toggle's value (sanyui parity, used by TP
@@ -587,7 +594,7 @@ local function attachWidgets(target, body)
             if kpopt.SyncToggleState then kpopt._parentToggle = toggle end
             return target._addKeyPickerInline(row, kpid, kpopt)
         end
-        return chain
+        return toggle
     end
 
     ------------------------------------------------------------------ Button
@@ -1171,6 +1178,7 @@ local function attachWidgets(target, body)
         local defaultMode = opt.Mode    or "Toggle"
         local modesList   = opt.Modes   or KEY_MODES_DEFAULT
         local parentToggle = opt._parentToggle  -- set by AddToggle chain on SyncToggleState
+        local noUI = opt.NoUI == true            -- skip the keybind HUD entirely
 
         -- SyncToggleState locks the keypicker into "Toggle" mode and binds its
         -- _toggleState directly to the parent toggle's Value. sanyui parity.
@@ -1181,7 +1189,7 @@ local function attachWidgets(target, body)
 
         local kp = { Type = "KeyPicker", Value = defaultKey, Mode = defaultMode,
                      Callback = opt.Callback, _toggleState = false,
-                     _parentToggle = parentToggle }
+                     _parentToggle = parentToggle, _noUI = noUI }
 
         local function bracketText(k)
             if not k or k == "" or k == "None" then return "[-]" end
@@ -1396,21 +1404,25 @@ local function attachWidgets(target, body)
         track(picker.MouseEnter:Connect(function()
             if picker.TextColor3 == Theme.TextDim then picker.TextColor3 = Theme.Text end
         end))
-        track(picker.MouseLeave:Connect(function() refreshColor(kp._toggleState) end))
+        -- MouseLeave restores color from the AUTHORITATIVE GetState() — picks
+        -- up SyncToggleState's parentToggle.Value, the live Hold-key down/up
+        -- state, and Always-mode all in one. Previously this only checked
+        -- _toggleState which lied for Hold (always false after first frame)
+        -- and Always (always false too).
+        track(picker.MouseLeave:Connect(function() refreshColor(kp:GetState()) end))
 
         -- Keep a friendly display name so the keybinds HUD can show "X — Aimbot"
         -- instead of just "[X]" when this bind is active. Fall back to the
         -- registration id if the user didn't pass a Text label.
         kp._label = opt.Text or id
 
-        -- Register every keypicker globally so the keybinds HUD (built after
-        -- all widgets in the library tail) can iterate and show an entry per
-        -- currently-active bind. _registered = false marks it as not yet
-        -- attached to the HUD; the HUD code below attaches lazily on first
-        -- active-state read so this works for keypickers built after the HUD
-        -- itself (e.g. via dependency boxes inside the Callback).
-        Library._KeyPickers = Library._KeyPickers or {}
-        Library._KeyPickers[#Library._KeyPickers + 1] = kp
+        -- Register every keypicker globally so the keybinds HUD can iterate
+        -- and show an entry per currently-active bind. NoUI keypickers (like
+        -- the Menu bind) skip registration so they don't take up a HUD slot.
+        if not noUI then
+            Library._KeyPickers = Library._KeyPickers or {}
+            Library._KeyPickers[#Library._KeyPickers + 1] = kp
+        end
 
         Library.Options[id] = withOnChanged(kp)
         return kp
@@ -1891,26 +1903,63 @@ track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
             return
         end
     end
-    -- Menu open/close: prefer Library.ToggleKeybind (a user-set KeyPicker)
-    -- over the static Library.ToggleKey enum. main.lua wires
-    --   Library.ToggleKeybind = Options.MenuKeybind
-    -- so the user's rebind via the Menu-bind KeyPicker takes immediate
-    -- effect — without this check the menu stayed bound to End regardless.
+    -- Menu open/close — driven by Library.ToggleKeybind (a user-set KeyPicker)
+    -- or the static Library.ToggleKey enum as fallback. Honors the picker's
+    -- Mode so Toggle / Hold / Always / Off all behave consistently:
+    --   Toggle → press flips visibility (default)
+    --   Hold   → menu visible only while held (release is handled in
+    --            InputEnded below)
+    --   Always → menu always visible (ignore press)
+    --   Off    → key does nothing
+    -- The MenuKeybind picker is NoUI=true so it doesn't show up in the
+    -- keybinds HUD — pressing it doesn't render an HUD label either.
     if input.UserInputType == Enum.UserInputType.Keyboard and not gameProcessed then
         local toggleKey = Library.ToggleKey
         local kb = Library.ToggleKeybind
+        local kbMode
         if kb and type(kb.Value) == "string" and kb.Value ~= "" and kb.Value ~= "None" then
             local mapped = Enum.KeyCode[kb.Value]
-            if mapped then toggleKey = mapped end
+            if mapped then
+                toggleKey = mapped
+                kbMode = kb.Mode or "Toggle"
+            end
         end
         if input.KeyCode == toggleKey then
-            Library:Toggle()
+            if kbMode == "Hold" then
+                Library.Visible = true
+                if Library.Window and Library.Window._frame then
+                    Library.Window._frame.Visible = true
+                end
+            elseif kbMode == "Off" then
+                -- ignore
+            elseif kbMode == "Always" then
+                -- already visible; pressing while Always-mode shouldn't toggle
+            else
+                Library:Toggle()
+            end
         end
     end
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
         local p = Library.ActivePopup
         if p and p.InsideCheck and not p.InsideCheck(input) then closeActivePopup() end
+    end
+end))
+
+-- Hold-mode menu key: hide the menu on release. Only fires when the user
+-- explicitly set their MenuKeybind picker to Hold mode (Toggle/Always/Off
+-- skip this branch). Mirrors the press-side handler above.
+track(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    local kb = Library.ToggleKeybind
+    if not kb or kb.Mode ~= "Hold" then return end
+    if type(kb.Value) ~= "string" or kb.Value == "" or kb.Value == "None" then return end
+    local mapped = Enum.KeyCode[kb.Value]
+    if mapped and input.KeyCode == mapped then
+        Library.Visible = false
+        if Library.Window and Library.Window._frame then
+            Library.Window._frame.Visible = false
+        end
     end
 end))
 
@@ -2736,29 +2785,38 @@ function Library:HideLoader()
     end
 end
 
--- Watermark — top-right floating panel matching the GameScat base watermark:
--- outer 5-stroke layered border + inner Main with its own 5-stroke + rainbow
--- strip + 1px black shadow + bold label centered horizontally + vertically.
--- This is the SAME chrome the notification toast uses, just persistent
--- instead of fade-and-destroy. Width is automatic — grows to fit the text
--- (recomputed by Library:SetWatermark via measureText).
+-- ══════════════════════════════════════════════════════════════════════════
+-- Watermark — exact port of the GameScat base watermark layout:
+--   Outer Frame (WindowBg, 5 outer strokes at offsets 0/-1/-4t3/-5/-6)
+--   ├─ Main Frame (TabBg, 5 inner strokes at 0/-1/-2/-3/-4) — inset 10px
+--   ├─ Rainbow strip (6, 6) size (1, -12, 0, 2)
+--   ├─ Rainbow shadow (6, 7) size (1, -12, 0, 1) at 50% black
+--   └─ TextLabel inside Main, centered
+--
+-- The Main frame is positioned with 10px gap from each edge of Outer; the
+-- exposed 10px ring is filled by Outer's WindowBg + outer strokes — that's
+-- the "layered watermark" look users see on every GameScat menu.
+--
+-- The 1px-black-line bug ("spectatorlist has an bugged black 1px outline")
+-- happened on the previous design where Main was inset only 1px and the
+-- exposed WindowBg between them showed as a thin black stroke. With a 10px
+-- gap the outer band is intentional chrome instead of an accidental edge.
+-- ══════════════════════════════════════════════════════════════════════════
 local Watermark = mk("Frame", { Parent = ScreenGui,
     AnchorPoint = Vector2.new(1, 0),
     Position = UDim2.new(1, -10, 0, 10),
-    Size = UDim2.fromOffset(180, 24),
+    Size = UDim2.fromOffset(300, 44),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
     Visible = false, ZIndex = 190 })
 applyLayeredStrokes(Watermark, "outer")
 
--- Inner Main frame — TabBg + 5-stroke inner border (the "main" sub-layer in
--- the base watermark). Inset 1px from outer so the outer border lines stay
--- visible at the same time as the inner ones.
+-- Inner Main: inset 10px on each side (matches base watermark spacing).
 local WatermarkMain = mk("Frame", { Parent = Watermark,
-    Size = UDim2.new(1, -2, 1, -2), Position = UDim2.fromOffset(1, 1),
+    Size = UDim2.new(1, -20, 1, -20), Position = UDim2.fromOffset(10, 10),
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
--- Rainbow strip + 1px shadow under it (base watermark parity).
+-- Rainbow + 1px shadow on Main (base position offsets 6,4 / 6,5).
 local watermarkRb = mk("Frame", { Parent = WatermarkMain, ZIndex = 192,
     Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
     BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
@@ -2776,12 +2834,12 @@ mk("Frame", { Parent = WatermarkMain, ZIndex = 193,
     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
     BorderSizePixel = 0 })
 
--- Label — sits below the rainbow strip so it has clean breathing room.
+-- Label sits below the rainbow strip with even vertical breathing.
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
     Position = UDim2.fromOffset(8, 8),
     Size = UDim2.new(1, -16, 1, -10),
     BackgroundTransparency = 1, Text = "",
-    TextSize = 11, TextColor3 = Theme.TextActive,
+    TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
     TextYAlignment = Enum.TextYAlignment.Center,
     TextTruncate = Enum.TextTruncate.AtEnd,
@@ -2868,26 +2926,33 @@ do
     track(RunService.Heartbeat:Connect(function()
         if Library.Unloaded then return end
         if not Library._KeyPickers then return end
-        local anyActive = false
+        local anyBound = false
         for _, kp in Library._KeyPickers do
+            -- Has a real key bound? (matters for title visibility)
+            local hasKey = kp.Value and kp.Value ~= "None" and kp.Value ~= ""
+            if hasKey then anyBound = true end
+
+            -- Is the bind currently active? (matters for label visibility)
             local active = false
             local ok, state = pcall(kp.GetState, kp)
             if ok and state then active = true end
+
             local lbl = kp._hudLabel
             if active then
                 lbl = ensureHudLabel(kp)
-                local keyTxt = (kp.Value and kp.Value ~= "None" and kp.Value ~= "") and kp.Value or "-"
-                lbl.Text = "[" .. keyTxt .. "] " .. (kp._label or "")
+                lbl.Text = "[" .. (kp.Value or "-") .. "] " .. (kp._label or "")
                 if not lbl.Visible then lbl.Visible = true end
-                anyActive = true
             elseif lbl and lbl.Visible then
                 lbl.Visible = false
             end
         end
-        -- Hide the title (and effectively the whole HUD) when no binds are
-        -- active. Keeps the screen clean during downtime.
-        if KeybindTitle.Visible ~= anyActive then
-            KeybindTitle.Visible = anyActive
+        -- Title visibility: ANY bound key keeps the title up so the HUD chrome
+        -- stays consistent — title hides only when no keypicker has a key at
+        -- all (fresh page, all binds set to None). Previous "anyActive only"
+        -- caused the title to disappear the moment the user flipped every
+        -- bound toggle off, which the user reported as a bug.
+        if KeybindTitle.Visible ~= anyBound then
+            KeybindTitle.Visible = anyBound
         end
     end))
 end
@@ -2974,34 +3039,57 @@ function Library:CreatePlaceholderBox(config)
         position = UDim2.new(1, -(width + 30), 0, 50 + idx * 120)
     end
 
-    -- Outer with 5-stroke layered border + inner Main (matches the watermark
-    -- visual). AutomaticSize.Y so box height tracks its label count.
+    -- Same chrome as the Watermark: outer 5-stroke + 10px gap on each side
+    -- exposing the WindowBg layered band + inner Main (TabBg, 5 inner strokes).
+    -- Replaces the previous (-2, +1) layout which exposed a 1px-thick black
+    -- line between outer and Main — the "bugged 1px outline" the user
+    -- reported on the Spectator List panel.
     local outer = mk("Frame", { Parent = ScreenGui,
-        Position = position, Size = UDim2.fromOffset(width, 32),
+        Position = position, Size = UDim2.fromOffset(width, 52),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
         AutomaticSize = Enum.AutomaticSize.Y,
         ZIndex = 195, Active = true })
     applyLayeredStrokes(outer, "outer")
 
     local main = mk("Frame", { Parent = outer,
-        Size = UDim2.new(1, -2, 1, -2),
-        Position = UDim2.fromOffset(1, 1),
+        Size = UDim2.new(1, -20, 1, -20),
+        Position = UDim2.fromOffset(10, 10),
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 196 })
     applyLayeredStrokes(main, "inner")
 
+    -- Rainbow strip + 1px shadow on Main — same as Watermark (base parity).
+    local phRb = mk("Frame", { Parent = main, ZIndex = 196,
+        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
+    do
+        local g = Instance.new("UIGradient"); g.Name = "\0"
+        g.Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0,   Theme.RainbowA),
+            ColorSequenceKeypoint.new(0.5, Theme.RainbowB),
+            ColorSequenceKeypoint.new(1,   Theme.RainbowC),
+        }
+        g.Parent = phRb
+    end
+    mk("Frame", { Parent = main, ZIndex = 196,
+        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+        BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
+        BorderSizePixel = 0 })
+
+    -- Title sits BELOW the rainbow strip (Y=4-6) so they don't overlap.
+    -- Content area starts after title (or right below rainbow if no title).
     local titleLbl
-    local headerOffset = 4
+    local headerOffset = 10  -- below rainbow when no title
     if title then
         titleLbl = mkText("TextLabel", { Parent = main,
-            Position = UDim2.fromOffset(8, 4),
+            Position = UDim2.fromOffset(8, 10),
             Size = UDim2.new(1, -16, 0, 14),
             BackgroundTransparency = 1, Text = tostring(title),
             TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
             ZIndex = 197 }, "bold")
-        headerOffset = 22
+        headerOffset = 28
     end
 
     -- Content area — labels stack vertically, AutomaticSize drives main → outer.
@@ -3104,11 +3192,11 @@ function Library:SetWatermark(text)
     Watermark.Visible = (text ~= nil and text ~= "")
     if Watermark.Visible then
         pcall(function()
-            local w = measureText(text, 11, "bold")
-            -- Height 24 = matches the outer+inner+rainbow layered-watermark
-            -- chrome built above (4px top rainbow band + 16px label slot + 4px
-            -- bottom padding). Width grows with text + 20px breathing.
-            Watermark.Size = UDim2.fromOffset(math.max(80, w + 20), 24)
+            -- Width = text width + 16px label padding (inside Main) + 20px
+            -- outer-band chrome (10px gap on each side of Main). Height stays
+            -- at 44 (base watermark proportion: 24px Main + 20px chrome).
+            local textW = measureText(text, 12, "bold")
+            Watermark.Size = UDim2.fromOffset(math.max(160, textW + 36), 44)
         end)
     end
 end
