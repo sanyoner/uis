@@ -472,6 +472,13 @@ local Library = {
     Visible = true, Unloaded = false,
     ToggleKey = Enum.KeyCode.End,
     ActivePopup = nil, ActiveKeyPicker = nil,
+    -- _LoaderGate: true means "we're either still loading or the user
+    -- hasn't pressed Load yet, hide all on-screen chrome". Flipped to
+    -- false by ShowLoader when the Load button's animations finish.
+    -- Default false so scripts that DON'T use ShowLoader still show the
+    -- watermark/keybind HUD normally — only scripts that call ShowLoader
+    -- get the gated behavior (ShowLoader flips this to true at entry).
+    _LoaderGate = false,
 
     _AssetStatus = {
         FontReg    = (FONT_REG    ~= nil),
@@ -1663,8 +1670,14 @@ function Library:CreateWindow(opts)
         BackgroundTransparency = 1, BorderSizePixel = 0,
         Image = BG_ASSET or "", ScaleType = Enum.ScaleType.Stretch,
         ZIndex = 0 })
-    if Library._BgImageInstances then
-        Library._BgImageInstances[#Library._BgImageInstances + 1] = bgImg
+    Library._BgImageInstances = Library._BgImageInstances or {}
+    Library._BgImageInstances[#Library._BgImageInstances + 1] = bgImg
+    -- If a user URL was set before this window existed, replay it now so
+    -- the new window picks up the custom background immediately.
+    if Library._BgCurrentURL then
+        task.defer(function()
+            Library:SetBackgroundImage(Library._BgCurrentURL)
+        end)
     end
 
     -- Rainbow strip at TOP. In the GameScat base the shadow OVERLAPS the
@@ -2224,22 +2237,29 @@ end
 --   Library:SetBackgroundImage("https://example.com/myimage.png")  → swap
 --   Library:SetBackgroundImage(nil)                                → revert
 -- ══════════════════════════════════════════════════════════════════════════
-Library._BgImageInstances = setmetatable({}, { __mode = "v" })   -- weak refs
-Library._BgAssetDefault   = BG_ASSET                                -- baseline
+-- Plain array (NOT weak — previously `__mode = "v"` allowed Lua's GC to
+-- drop ImageLabels from the table even while they were live in the UI
+-- tree, leaving SetBackgroundImage to iterate an empty list and silently
+-- do nothing. The Roblox instance lifetime is managed by parent/child
+-- references, not Lua's GC, so a strong table is the correct fit here).
+Library._BgImageInstances = {}
+Library._BgAssetDefault   = BG_ASSET
 
--- Register a BG ImageLabel so SetBackgroundImage can update it in place.
--- CreateWindow stores the ImageLabel into Library._BgImageInstances.
-local function registerBgInstance(img)
-    if not img then return end
-    Library._BgImageInstances[#Library._BgImageInstances + 1] = img
-end
+-- Track the active user URL so re-runs (theme/font reloads) don't drop
+-- it. main.lua's BG-URL input persists via SaveManager since it's an
+-- AddInput widget, so the SetBackgroundImage call replays automatically
+-- on script restart.
+Library._BgCurrentURL = nil
 
 function Library:SetBackgroundImage(url)
+    -- Revert path: empty / nil URL → restore packaged default.
     if url == nil or url == "" then
-        -- Revert to packaged default
-        local def = Library._BgAssetDefault or BG_ASSET
+        Library._BgCurrentURL = nil
+        local def = Library._BgAssetDefault or BG_ASSET or ""
         for _, img in self._BgImageInstances do
-            if img and img.Parent then pcall(function() img.Image = def or "" end) end
+            if img and img.Parent then
+                pcall(function() img.Image = def end)
+            end
         end
         return true
     end
@@ -2247,18 +2267,34 @@ function Library:SetBackgroundImage(url)
         if self.Notify then self:Notify("Invalid image URL", 3) end
         return false, "invalid url"
     end
-    -- Download to workspace + register as a customasset. Same recipe as the
-    -- font/bg loaders above — short-circuits if the file already exists.
-    local fname = "nachtara_userbg_" ..
-        string.gsub(url, "[^%w_-]", "_"):sub(1, 80) .. ".png"
+    -- Per-URL filename so a re-paste of a different URL re-downloads.
+    -- The previous regex-escape produced 80-char-truncated names that
+    -- collided across similar URLs; include a short hash for uniqueness.
+    local hash = 0
+    for i = 1, #url do hash = (hash * 33 + url:byte(i)) % 0x7FFFFFFF end
+    local fname = "nachtara_userbg_" .. tostring(hash) .. ".png"
     local ok = ensureFile(fname, url)
-    local asset = ok and customAsset(fname) or nil
-    if not asset then
-        if self.Notify then self:Notify("Failed to load background image", 3) end
+    if not ok then
+        if self.Notify then self:Notify("Failed to download image", 3) end
         return false, "download failed"
     end
+    local asset = customAsset(fname)
+    if not asset then
+        if self.Notify then self:Notify("Failed to register image asset", 3) end
+        return false, "asset register failed"
+    end
+    Library._BgCurrentURL = url
+    -- Walk every registered BG ImageLabel + swap. Use ipairs because
+    -- _BgImageInstances is a plain array now.
+    local applied = 0
     for _, img in self._BgImageInstances do
-        if img and img.Parent then pcall(function() img.Image = asset end) end
+        if img and img.Parent then
+            pcall(function() img.Image = asset end)
+            applied = applied + 1
+        end
+    end
+    if applied == 0 and self.Notify then
+        self:Notify("Image loaded but no Window to apply it to", 3)
     end
     return true
 end
@@ -2349,31 +2385,18 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Inner Main: TabBg with 5-stroke INNER pattern (the watermark "main" sub).
+    -- Inner Main: TabBg, FILLS Outer (no inset, no inner stroke composite).
+    -- Previously inset 1px with a 5-stroke INNER pattern, which exposed the
+    -- WindowBg ring as a visible dark inner outline (user-reported "back
+    -- outline" in the notifications screenshot). Single flat TabBg frame
+    -- gives the 5-OUTER-stroke composite room to render without a
+    -- competing inner border.
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, -2, 1, -2),
-        Position = UDim2.fromOffset(1, 1), ZIndex = 201 })
-    local innerStrokes = {}
-    do
-        local set = {
-            { off =  0, t = 1, c = Theme.BorderDark },
-            { off = -1, t = 1, c = Theme.BorderHi   },
-            { off = -2, t = 1, c = Theme.BorderMid  },
-            { off = -3, t = 1, c = Theme.BorderHi   },
-            { off = -4, t = 1, c = Theme.BorderDark },
-        }
-        for _, s in set do
-            local st = Instance.new("UIStroke"); st.Name = "\0"
-            st.Color = s.c; st.Thickness = s.t; st.Transparency = 1
-            st.LineJoinMode = Enum.LineJoinMode.Miter
-            st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-            st.BorderOffset = UDim.new(0, s.off)
-            st.Parent = main
-            innerStrokes[#innerStrokes + 1] = st
-        end
-    end
+        Size = UDim2.fromScale(1, 1),
+        Position = UDim2.fromOffset(0, 0), ZIndex = 201 })
+    local innerStrokes = {}   -- kept (empty) for the fade-in loop below
 
     -- Rainbow strip + shadow (base-watermark parity). Stretched 2px wider on
     -- each side compared to the original (was -12/+6 → now -8/+4) — user
@@ -2394,12 +2417,12 @@ function Library:Notify(text, duration)
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label — raised 3px from previous Y=9 to Y=6, matching the user's
-    -- screenshot ask ("notification text must be higher"). Anchored 6px
-    -- below the rainbow shadow so the visual cadence reads "rainbow strip
-    -- → small breathing → text → bottom padding".
+    -- Label — raised again per user feedback ("texts in notifications a
+    -- little higher"). Sits 2px below the rainbow shadow row (Y=4+1 ≈
+    -- bottom of shadow → 4px text top). Height 12 with vertical-center
+    -- alignment so the glyph baseline lines up with the rainbow visually.
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Position = UDim2.fromOffset(8, 6),
+        Position = UDim2.fromOffset(8, 4),
         Size = UDim2.new(1, -16, 0, 14),
         BackgroundTransparency = 1, Text = text,
         TextSize = 11, TextColor3 = Theme.TextActive,
@@ -2502,6 +2525,14 @@ function Library:ShowLoader(config)
     config.LoadTime    = tonumber(config.LoadTime) or 3
     config.Callback    = config.Callback or function() end
     config.Patchnotes  = config.Patchnotes or {}
+
+    -- Engage the loader gate: every chrome panel (Watermark, KeybindFrame,
+    -- PlaceholderBoxes) checks this flag and stays hidden while it's true.
+    -- Flipped off after the Load-button animations finish so the on-screen
+    -- HUDs only appear AFTER the user has confirmed they want to load.
+    Library._LoaderGate = true
+    pcall(function() if Watermark then Watermark.Visible = false end end)
+    pcall(function() if KeybindFrame then KeybindFrame.Visible = false end end)
 
     if Library._Loader then
         pcall(function() Library._Loader:Destroy() end)
@@ -2878,6 +2909,13 @@ function Library:ShowLoader(config)
     resume.Event:Wait()
     resume:Destroy()
 
+    -- Release the loader gate — chrome panels (Watermark, Keybinds HUD)
+    -- are now free to render. KeybindFrame is unconditionally shown; the
+    -- Watermark is left for the watermark-renderer heartbeat to bring up
+    -- on the next tick (it'll respect the user's `Enabled` flag).
+    Library._LoaderGate = false
+    pcall(function() if KeybindFrame then KeybindFrame.Visible = true end end)
+
     -- ── INTRO (optional cinematic before Callback runs) ───────────────────
     do
         local introInfo = TweenInfo.new(0.9, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
@@ -2991,8 +3029,40 @@ local Watermark = mk("Frame", { Parent = ScreenGui,
     Position = UDim2.new(1, -10, 0, 10),
     Size = UDim2.fromOffset(350, 54),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
-    Visible = false, ZIndex = 190 })
+    Visible = false, ZIndex = 190, Active = true })
 applyLayeredStrokes(Watermark, "outer")
+
+-- Drag the watermark from anywhere on its surface. Reposition is in
+-- pixel offsets so the anchor (top-right by default) doesn't fight
+-- the drag delta. After the first drag, AnchorPoint stays at the
+-- original top-right so screen-edge stickiness keeps working.
+do
+    local dragging, dragStart, startPos
+    track(Watermark.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = Watermark.Position
+        end
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+           or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            Watermark.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+    track(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+end
 
 -- Rainbow + 1px shadow at the top of OUTER (sibling of Main).
 -- Position (6, 6) and (6, 7) — matches the main Window's rainbow Y so
@@ -4115,60 +4185,66 @@ do
     -- so the preview ALWAYS renders the real R15 player — no block-figure
     -- fallback (user explicitly demanded "use an real r15 character, not
     -- this pixel dude").
+    -- Clones LocalPlayer.Character into the ViewportFrame. NOT yieldable —
+    -- safe to call from a RenderStepped path. Caller (rebuildScene) is
+    -- responsible for waiting on LocalPlayer.CharacterAdded if needed.
     local function buildSceneInto(vp)
         for _, c in vp:GetChildren() do
-            if c:IsA("WorldModel") or c:IsA("Camera") then
+            if c:IsA("WorldModel") or c:IsA("Camera") or c:IsA("Model") then
                 pcall(c.Destroy, c)
             end
         end
-        local wm = Instance.new("WorldModel")
-        wm.Parent = vp
 
         local cam = Instance.new("Camera")
-        cam.FieldOfView = 50   -- wider so a full R15 char fits at 10-stud range
+        cam.FieldOfView = 50
         cam.Parent = vp
         vp.CurrentCamera = cam
 
         local origChar = LocalPlayer.Character
-        if not origChar then return wm, nil, cam, nil, nil end
+        if not origChar or not origChar.Parent then
+            return nil, cam, nil, nil
+        end
 
+        -- Clone with Archivable temporarily lifted. Some executors lock
+        -- Archivable; pcall keeps us defensive.
         local origArchivable = origChar.Archivable
         pcall(function() origChar.Archivable = true end)
         local ok, clone = pcall(origChar.Clone, origChar)
         pcall(function() origChar.Archivable = origArchivable end)
-        if not ok or not clone then return wm, nil, cam, nil, nil end
+        if not ok or not clone then return nil, cam, nil, nil end
 
         local char = clone
-        -- Strip anything that runs/animates the rig inside the viewport, plus
-        -- any BillboardGui / Highlight the live ESP attached to the source
-        -- character (would re-render inside the preview window).
+
+        -- Strip scripts + script-attached UI/Highlights from the clone so
+        -- the preview only renders the rig itself.
         for _, d in char:GetDescendants() do
             if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
-               or d:IsA("BillboardGui") or d:IsA("Highlight") then
+               or d:IsA("BillboardGui") or d:IsA("SurfaceGui")
+               or d:IsA("Highlight") then
                 pcall(d.Destroy, d)
             end
         end
 
-        -- Step 1: Parent to the WorldModel BEFORE anchoring so PivotTo can
-        -- move all parts together via the existing Motor6Ds.
-        char.Parent = wm
+        -- ViewportFrame renders R15 characters directly — no WorldModel
+        -- needed (and WorldModel adds a layer that occasionally hides
+        -- accessories). Direct viewport parenting is the documented path
+        -- for static character display.
+        char.Parent = vp
+
         local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
         if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
 
-        -- Step 2: Pivot the whole rig to origin so the camera math below
-        -- works in LOCAL coordinates regardless of where the source char
-        -- happens to be in the world. PivotTo uses PrimaryPart.CFrame as
-        -- the reference, which is HRP (already set).
+        -- Pivot whole rig to (0, 3, 0) so camera math below operates in
+        -- local-ish coordinates regardless of where the source char is.
         if char.PrimaryPart then
-            pcall(function()
-                char:PivotTo(CFrame.new(0, 3, 0))
-            end)
+            pcall(function() char:PivotTo(CFrame.new(0, 3, 0)) end)
         end
 
-        -- Step 3: Anchor every BasePart, reset visibility flags. ThirdPerson
-        -- + Chams + various game systems may have set Transparency or
-        -- LocalTransparencyModifier on the live char; the clone inherits
-        -- them and would render invisible without explicit reset.
+        -- Force every BasePart visible. The live character may have
+        -- LocalTransparencyModifier = 1 set by ThirdPerson / Chams; the
+        -- clone inherits it and would otherwise render invisible. Also
+        -- reset Material — some game systems set BasePart.Material to
+        -- ForceField (transparent in viewports).
         for _, p in char:GetDescendants() do
             if p:IsA("BasePart") then
                 pcall(function()
@@ -4176,6 +4252,12 @@ do
                     p.LocalTransparencyModifier = 0
                     p.Anchored = true
                     p.CanCollide = false
+                    p.CanQuery = false
+                    p.CanTouch = false
+                    p.Massless = true
+                    if p.Material == Enum.Material.ForceField then
+                        p.Material = Enum.Material.Plastic
+                    end
                 end)
             elseif p:IsA("Decal") then
                 pcall(function() p.Transparency = 0 end)
@@ -4184,23 +4266,22 @@ do
             end
         end
 
-        -- Step 4: Stop the Humanoid from triggering state changes. With
-        -- everything anchored this is mostly cosmetic, but PlatformStand
-        -- prevents the rig from playing the Idle animation (which can
-        -- subtly shift parts in a ViewportFrame).
+        -- Disable Humanoid state changes so the rig holds its anchored
+        -- pose. NameDisplay/HealthDisplay turned off so the floating
+        -- Humanoid GUI doesn't overlay the ESP preview labels.
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             pcall(function()
                 hum.PlatformStand = true
                 hum.AutoRotate = false
-                hum:ChangeState(Enum.HumanoidStateType.Physics)
                 hum.HealthDisplayDistance = 0
                 hum.NameDisplayDistance = 0
+                hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
             end)
         end
 
         local head = char:FindFirstChild("Head")
-        return wm, char, cam, hrp, head
+        return char, cam, hrp, head
     end
 
     -- Forward declarations so build() can reference rebuildScene + update
@@ -4466,15 +4547,39 @@ do
         end))
     end
 
-    -- Rebuild scene whenever requested (initial show + character respawn).
+    -- Rebuild scene whenever requested. Runs in a background task because
+    -- it may need to wait for LocalPlayer.CharacterAdded (during initial
+    -- spawn or right after a death). Show() doesn't block on this — the
+    -- viewport stays empty until the clone lands, then the per-frame
+    -- update() picks up ESPPreview._char and starts orbiting.
     rebuildScene = function()
         if not Viewport then return end
-        local wm, char, cam, hrp, head = buildSceneInto(Viewport)
-        ESPPreview._wm   = wm
-        ESPPreview._char = char
-        ESPPreview._cam  = cam
-        ESPPreview._hrp  = hrp
-        ESPPreview._head = head
+        -- Cancel any in-flight rebuild so multiple Show()s don't race.
+        ESPPreview._rebuildToken = (ESPPreview._rebuildToken or 0) + 1
+        local myToken = ESPPreview._rebuildToken
+        task.spawn(function()
+            -- Wait for char to be available (with a 10s ceiling so we
+            -- don't lock the task forever in pathological cases).
+            local origChar = LocalPlayer.Character
+            local deadline = tick() + 10
+            while not (origChar and origChar.Parent) and tick() < deadline do
+                LocalPlayer.CharacterAdded:Wait()
+                origChar = LocalPlayer.Character
+                -- Give Roblox a beat to finish populating accessories +
+                -- meshes after the spawn event — cloning too early lands
+                -- a partially-populated rig that renders missing limbs.
+                task.wait(0.5)
+            end
+            -- If a newer rebuildScene started, abandon this one.
+            if myToken ~= ESPPreview._rebuildToken then return end
+            if not Viewport or not Viewport.Parent then return end
+
+            local char, cam, hrp, head = buildSceneInto(Viewport)
+            ESPPreview._char = char
+            ESPPreview._cam  = cam
+            ESPPreview._hrp  = hrp
+            ESPPreview._head = head
+        end)
     end
 
     -- Per-frame: position camera around the character (orbit at RotationState
@@ -4785,6 +4890,13 @@ do
 
     -- Render the watermark text from the current selection.
     local function renderWatermark()
+        -- Loader gate: hide every chrome panel while the loader UI is up.
+        -- ShowLoader flips this off after the Load-button animation
+        -- finishes, at which point the watermark can render normally.
+        if Library._LoaderGate then
+            Library:SetWatermarkVisibility(false)
+            return
+        end
         local cfg = Library._WatermarkConfig
         if not cfg.Enabled then
             Library:SetWatermarkVisibility(false)
