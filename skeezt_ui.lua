@@ -181,6 +181,36 @@ FONT_REG   = loadCustomFont("VerdanaNormal.ttf",  "Verdana-Font.ttf",     "Verda
 FONT_BOLD  = loadCustomFont("VerdanaBold.ttf",    "Verdana-Bold.ttf",     "VerdanaBold")
 FONT_PIXEL = loadCustomFont("SmallestPixel.ttf",  "smallest_pixel-7.ttf", "SmallestPixel")
 
+-- Async retry: if any of the 3 custom fonts failed to resolve on the
+-- synchronous first pass (HttpGet timed out, customAsset() returned nil
+-- before the writefile completed, etc.) retry in a background thread so the
+-- library doesn't permanently fall back to Roblox-builtin text. When a
+-- retry succeeds we walk ScreenGui and re-apply the font to existing text
+-- instances so widgets that were created with no FontFace pick up the
+-- custom face as soon as it loads.
+task.defer(function()
+    if not FONT_REG then
+        FONT_REG = loadCustomFont("VerdanaNormal.ttf", "Verdana-Font.ttf", "Verdana")
+    end
+    if not FONT_BOLD then
+        FONT_BOLD = loadCustomFont("VerdanaBold.ttf", "Verdana-Bold.ttf", "VerdanaBold")
+    end
+    if not FONT_PIXEL then
+        FONT_PIXEL = loadCustomFont("SmallestPixel.ttf", "smallest_pixel-7.ttf", "SmallestPixel")
+    end
+    -- Re-applied via dispatchFontChange once Library is initialized below.
+    -- The check is deferred to a later task.defer so Library.ScreenGui /
+    -- Library.CurrentFont / dispatchFontChange all exist by then.
+    task.defer(function()
+        if Library and Library.SetFont then
+            Library.CurrentFont = Library.CurrentFont or FONT_REG
+            -- dispatchFontChange is module-local — call SetFont with the
+            -- current font name (or nil for default) to trigger it.
+            Library:SetFont(nil)
+        end
+    end)
+end)
+
 -- Background image — workspace cache first, github fallback.
 BG_ASSET = customAsset("skeezt_menu_bg.png")
 if not BG_ASSET then
@@ -415,10 +445,16 @@ local CONTAINER = getContainer()
 -- Sibling ZIndexBehavior: children always render above their parents,
 -- siblings sort by ZIndex within the same parent. Avoids the Global-mode
 -- bug where Content (ZIndex 4) covers groupbox widgets at default ZIndex.
+--
+-- AutoLocalize=false stops Roblox's built-in TranslationService from translating
+-- our UI strings into the player's locale ("Menu" → "Menü" on German clients,
+-- etc.). Propagates to every descendant TextLabel/TextButton/TextBox, so we
+-- don't have to set it on each individually.
 local ScreenGui = mk("ScreenGui", {
     DisplayOrder = 50000,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     IgnoreGuiInset = true, ResetOnSpawn = false,
+    AutoLocalize = false,
 })
 pcall(function() ScreenGui.Parent = CONTAINER end)
 Library.ScreenGui = ScreenGui
@@ -808,6 +844,11 @@ local function attachWidgets(target, body)
             else self.Value = v end
             refresh()
             if not supp then safeCallback(self.Callback, self.Value) end
+            -- Fire dependency refreshers so SetupDependencies can gate
+            -- visibility off dropdown VALUES (not just toggle bool state).
+            -- Without this, switching a "Mode" dropdown wouldn't show/hide
+            -- the mode-specific sub-controls until some toggle later changed.
+            notifyDepChange()
         end
         if opt.Default ~= nil then dd:SetValue(opt.Default, true) else refresh() end
 
@@ -1153,9 +1194,9 @@ local function attachWidgets(target, body)
             picker = mkText("TextButton", { Parent = parentRow,
                 AnchorPoint = Vector2.new(1, 0.5),
                 Position = UDim2.new(1, -2, 0.5, 0),
-                Size = UDim2.fromOffset(40, 2),
+                Size = UDim2.fromOffset(46, 3),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Text = bracketText(defaultKey), TextSize = 7,
+                Text = bracketText(defaultKey), TextSize = 9,
                 TextColor3 = Theme.TextDim, AutoButtonColor = false,
                 TextXAlignment = Enum.TextXAlignment.Right,
                 TextYAlignment = Enum.TextYAlignment.Center,
@@ -1174,9 +1215,9 @@ local function attachWidgets(target, body)
             picker = mkText("TextButton", { Parent = row,
                 AnchorPoint = Vector2.new(1, 0.5),
                 Position = UDim2.new(1, -2, 0.5, 0),
-                Size = UDim2.fromOffset(40, 2),
+                Size = UDim2.fromOffset(46, 3),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Text = bracketText(defaultKey), TextSize = 7,
+                Text = bracketText(defaultKey), TextSize = 9,
                 TextColor3 = Theme.TextDim, AutoButtonColor = false,
                 TextXAlignment = Enum.TextXAlignment.Right,
                 TextYAlignment = Enum.TextYAlignment.Center,
@@ -1357,6 +1398,20 @@ local function attachWidgets(target, body)
         end))
         track(picker.MouseLeave:Connect(function() refreshColor(kp._toggleState) end))
 
+        -- Keep a friendly display name so the keybinds HUD can show "X — Aimbot"
+        -- instead of just "[X]" when this bind is active. Fall back to the
+        -- registration id if the user didn't pass a Text label.
+        kp._label = opt.Text or id
+
+        -- Register every keypicker globally so the keybinds HUD (built after
+        -- all widgets in the library tail) can iterate and show an entry per
+        -- currently-active bind. _registered = false marks it as not yet
+        -- attached to the HUD; the HUD code below attaches lazily on first
+        -- active-state read so this works for keypickers built after the HUD
+        -- itself (e.g. via dependency boxes inside the Callback).
+        Library._KeyPickers = Library._KeyPickers or {}
+        Library._KeyPickers[#Library._KeyPickers + 1] = kp
+
         Library.Options[id] = withOnChanged(kp)
         return kp
     end
@@ -1431,12 +1486,27 @@ local function attachWidgets(target, body)
         local depBox = {}
         attachWidgets(depBox, depBody)
 
+        -- Dependency check supports three widget shapes:
+        --   { Toggle,        true|false   } — classic boolean gate
+        --   { SingleDropdown, "value"     } — show only when selected = value
+        --   { MultiDropdown,  "value"     } — show when "value" is in selected set
+        -- Pass MULTIPLE conditions to AND them. The MultiDropdown shape is what
+        -- enables "show jitter sub-options only when AAYawMod = Jitter" without
+        -- needing a separate companion toggle.
         function depBox:SetupDependencies(deps)
             local function refresh()
                 local show = true
                 for _, d in deps do
-                    local tog, expected = d[1], d[2]
-                    if tog and tog.Value ~= expected then show = false; break end
+                    local widget, expected = d[1], d[2]
+                    if not widget then show = false; break end
+                    local val = widget.Value
+                    if widget.Multi and type(val) == "table" then
+                        -- Multi-dropdown: expected key must be in the
+                        -- selected set ({key=true} shape).
+                        if not val[expected] then show = false; break end
+                    else
+                        if val ~= expected then show = false; break end
+                    end
                 end
                 depBody.Visible = show
             end
@@ -1623,7 +1693,7 @@ function Library:CreateWindow(opts)
     -- groupbox (full widget API via attachWidgets). Used heavily in
     -- main.lua's Combat / Anti-Aim / World tabs to compress related
     -- sub-features into one chunk.
-    local function buildTabbox(parent)
+    local function buildTabbox(parent, title)
         local wrap = mk("Frame", { Parent = parent,
             Size = UDim2.new(1, 0, 0, 30),
             BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -1635,10 +1705,34 @@ function Library:CreateWindow(opts)
             AutomaticSize = Enum.AutomaticSize.Y, ClipsDescendants = false })
         applyLayeredStrokes(box, "inner")
 
+        -- Optional title chip — same in-border style as Groupbox titles.
+        -- Pass `title` to AddLeftTabbox/AddRightTabbox to enable it (existing
+        -- callers without a title still work — chip skipped when nil).
+        local titleTop = 4  -- where the tab-button row sits (no title path)
+        if title and title ~= "" then
+            local titleStr = tostring(title)
+            local titleW = measureText(titleStr, 11, "bold") + 8
+            mk("Frame", { Parent = wrap,
+                Size = UDim2.fromOffset(titleW, 6),
+                Position = UDim2.fromOffset(11, -2),
+                BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+                ZIndex = 6 })
+            mkText("TextLabel", { Parent = wrap,
+                Size = UDim2.fromOffset(titleW, 12),
+                Position = UDim2.fromOffset(11, -5),
+                BackgroundTransparency = 1,
+                Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
+                TextXAlignment = Enum.TextXAlignment.Center,
+                TextYAlignment = Enum.TextYAlignment.Center,
+                ZIndex = 7,
+            }, "bold")
+            titleTop = 10  -- shift tab row down so it doesn't overlap title
+        end
+
         -- Horizontal tab-button row at the top.
         local tabRow = mk("Frame", { Parent = box,
             Size = UDim2.new(1, -16, 0, 12),
-            Position = UDim2.fromOffset(8, 4),
+            Position = UDim2.fromOffset(8, titleTop),
             BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 3 })
         local tabLay = listLayout(tabRow, Enum.FillDirection.Horizontal, 10)
         tabLay.VerticalAlignment = Enum.VerticalAlignment.Center
@@ -1656,9 +1750,12 @@ function Library:CreateWindow(opts)
                 ZIndex = 4,
             }, "bold")
 
+            -- Body Y offset = tabRow base + 16 so the tab buttons (12px tall)
+            -- have 4px breathing before widgets start. Shifts down when the
+            -- tabbox has a title chip (titleTop=10 vs 4).
             local body_ = mk("Frame", { Parent = box,
                 Size = UDim2.new(1, -16, 0, 0),
-                Position = UDim2.fromOffset(8, 20),
+                Position = UDim2.fromOffset(8, titleTop + 16),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
                 AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 2,
                 Visible = false })
@@ -1747,8 +1844,8 @@ function Library:CreateWindow(opts)
                       _right = rightCol, _underline = underline }
         function tab:AddLeftGroupbox(n)  return buildGroupbox(leftCol, n)  end
         function tab:AddRightGroupbox(n) return buildGroupbox(rightCol, n) end
-        function tab:AddLeftTabbox()     return buildTabbox(leftCol)        end
-        function tab:AddRightTabbox()    return buildTabbox(rightCol)       end
+        function tab:AddLeftTabbox(name)  return buildTabbox(leftCol,  name) end
+        function tab:AddRightTabbox(name) return buildTabbox(rightCol, name) end
 
         track(btn.MouseButton1Click:Connect(function() self:SelectTab(tab) end))
         track(btn.MouseEnter:Connect(function()
@@ -1794,9 +1891,21 @@ track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
             return
         end
     end
-    if input.UserInputType == Enum.UserInputType.Keyboard
-        and input.KeyCode == Library.ToggleKey and not gameProcessed then
-        Library:Toggle()
+    -- Menu open/close: prefer Library.ToggleKeybind (a user-set KeyPicker)
+    -- over the static Library.ToggleKey enum. main.lua wires
+    --   Library.ToggleKeybind = Options.MenuKeybind
+    -- so the user's rebind via the Menu-bind KeyPicker takes immediate
+    -- effect — without this check the menu stayed bound to End regardless.
+    if input.UserInputType == Enum.UserInputType.Keyboard and not gameProcessed then
+        local toggleKey = Library.ToggleKey
+        local kb = Library.ToggleKeybind
+        if kb and type(kb.Value) == "string" and kb.Value ~= "" and kb.Value ~= "None" then
+            local mapped = Enum.KeyCode[kb.Value]
+            if mapped then toggleKey = mapped end
+        end
+        if input.KeyCode == toggleKey then
+            Library:Toggle()
+        end
     end
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -2170,16 +2279,17 @@ function Library:ShowLoader(config)
     end
 
     local hasPatch = #config.Patchnotes > 0
-    -- Match Window's padding cadence: rainbow at (6,6) directly on outer +
-    -- Content frame inset at (20, 36) like CreateWindow does. Loader height
-    -- bumped to 260 so the inner Content has the same headroom as Window's
-    -- tab area (36px) + a comfortable bottom margin.
+    -- Loader layers/padding mirror CreateWindow 1:1 so the loader visually
+    -- IS the menu before any tabs exist:
+    --   loader (outer 5-stroke)
+    --   rainbow at (6, 6), shadow at (6, 7) on loader
+    --   Title at (20, 14) size (1, -40, 0, 18)  ← same Y as Window.TabBar
+    --   Content at (20, 36) size (1, -40, 1, -56) with inner 5-stroke  ← same as Window.Content
+    --   ContentInner at (10, 10) size (1, -20, 1, -20) inside Content  ← same as Window.ContentInner
+    -- All widget positions below are relative to ContentInner, matching how
+    -- the real menu's columns are positioned relative to its ContentInner.
     local W = hasPatch and 580 or 320
-    local H = 260
-    -- Inside-Content layout offsets (relative to the inner Content frame).
-    -- LeftPanelW = the "main" column with title-info-button when patchnotes
-    -- are present; sits at left of Content, separator at x=LeftPanelW.
-    local LeftPanelW = hasPatch and 280 or nil
+    local H = 280   -- tall enough that the inner widget area = 204px
 
     -- Outer frame: WindowBg + 5-stroke OUTER border, centered (Window parity).
     local loader = mk("Frame", { Parent = ScreenGui,
@@ -2206,106 +2316,113 @@ function Library:ShowLoader(config)
         BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
         BorderSizePixel = 0 })
 
-    -- Header area — title + subtitle sit between the rainbow and the Content
-    -- frame (where CreateWindow's tab bar lives at Y=14).
+    -- Title in the TabBar slot — same Y=14 height=18 the real menu uses.
+    -- TextSize 12 to match the menu's bold tab labels.
     mkText("TextLabel", { Parent = loader, ZIndex = 254,
         Position = UDim2.fromOffset(20, 14),
-        Size = UDim2.new(1, -40, 0, 16),
-        BackgroundTransparency = 1, Text = config.Title, TextSize = 14,
+        Size = UDim2.new(1, -40, 0, 18),
+        BackgroundTransparency = 1, Text = config.Title, TextSize = 12,
         TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
     }, "bold")
-    mkText("TextLabel", { Parent = loader, ZIndex = 254,
-        Position = UDim2.fromOffset(20, 30),
-        Size = UDim2.new(1, -40, 0, 12),
-        BackgroundTransparency = 1, Text = config.Subtitle, TextSize = 11,
-        TextColor3 = Theme.TextDim,
-        TextXAlignment = Enum.TextXAlignment.Center,
-    }, "reg")
 
-    -- Content frame — exact Window parity: 20px horiz gutter, 46px top
-    -- (4 more than Window since the loader doesn't have a tab bar but does
-    -- have title+subtitle), 20px bottom. Inner 5-stroke border + TabBg fill.
+    -- Content frame — EXACT Window parity. offset(20, 36) size (1, -40, 1, -56).
     local Content = mk("Frame", { Parent = loader, ZIndex = 254,
-        Position = UDim2.fromOffset(20, 46),
-        Size = UDim2.new(1, -40, 1, -66),
+        Position = UDim2.fromOffset(20, 36),
+        Size = UDim2.new(1, -40, 1, -56),
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0 })
     applyLayeredStrokes(Content, "inner")
 
-    -- Inside-Content widths/positions are now relative to Content (not loader).
-    local CW = W - 40  -- inner content width
-    local CH = H - 66  -- inner content height
-    local L  = hasPatch and LeftPanelW or CW
+    -- ContentInner at (10, 10) size (1, -20, 1, -20) inside Content — same
+    -- 10px padding the menu's ContentInner uses.
+    local ContentInner = mk("Frame", { Parent = Content, ZIndex = 255,
+        Position = UDim2.fromOffset(10, 10),
+        Size = UDim2.new(1, -20, 1, -20),
+        BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Info container — Script/Game rows with separator (sits in the left panel).
-    local infoBox = mk("Frame", { Parent = Content, ZIndex = 255,
-        Position = UDim2.fromOffset(14, 14),
-        Size = UDim2.fromOffset(L - 28, 52),
+    -- Inner-area dimensions for laying out subtitle/info/button:
+    --   IW = ContentInner width  = W - 40 - 20 = W - 60
+    --   IH = ContentInner height = H - 56 - 20 = H - 76
+    --   L  = left-panel inner width (full IW when no patchnotes)
+    local IW = W - 60
+    local IH = H - 76
+    local L  = hasPatch and 240 or IW   -- left col width when patchnotes shown
+
+    -- Subtitle (first thing inside ContentInner). Optional — main.lua passes
+    -- empty string when no subtitle desired; we still reserve the row so the
+    -- subsequent positions stay deterministic.
+    mkText("TextLabel", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.fromOffset(L, 14),
+        BackgroundTransparency = 1, Text = config.Subtitle, TextSize = 11,
+        TextColor3 = Theme.TextDim,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
+    }, "reg")
+
+    -- Info container — Script/Game rows with separator. Sits below subtitle.
+    local infoBox = mk("Frame", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, 22),
+        Size = UDim2.fromOffset(L, 52),
         BackgroundColor3 = Theme.GroupBg, BorderSizePixel = 0 })
     applyLayeredStrokes(infoBox, "inner")
 
-    -- Script row
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
-        Position = UDim2.fromOffset(8, 4),
-        Size = UDim2.new(0.4, 0, 0, 18),
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 257,
+        Position = UDim2.fromOffset(8, 4), Size = UDim2.new(0.4, 0, 0, 18),
         BackgroundTransparency = 1, Text = "Script", TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, "reg")
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
-        Position = UDim2.new(0.4, 0, 0, 4),
-        Size = UDim2.new(0.6, -8, 0, 18),
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 257,
+        Position = UDim2.new(0.4, 0, 0, 4), Size = UDim2.new(0.6, -8, 0, 18),
         BackgroundTransparency = 1, Text = config.ScriptName, TextSize = 11,
         TextColor3 = Theme.Accent,
         TextXAlignment = Enum.TextXAlignment.Right,
     }, "bold")
-
-    -- Mid separator
-    mk("Frame", { Parent = infoBox, ZIndex = 256,
-        Position = UDim2.fromOffset(6, 26),
-        Size = UDim2.new(1, -12, 0, 1),
+    mk("Frame", { Parent = infoBox, ZIndex = 257,
+        Position = UDim2.fromOffset(6, 26), Size = UDim2.new(1, -12, 0, 1),
         BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
-
-    -- Game row
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
-        Position = UDim2.fromOffset(8, 28),
-        Size = UDim2.new(0.4, 0, 0, 18),
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 257,
+        Position = UDim2.fromOffset(8, 28), Size = UDim2.new(0.4, 0, 0, 18),
         BackgroundTransparency = 1, Text = "Game", TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, "reg")
-    mkText("TextLabel", { Parent = infoBox, ZIndex = 256,
-        Position = UDim2.new(0.4, 0, 0, 28),
-        Size = UDim2.new(0.6, -8, 0, 18),
+    mkText("TextLabel", { Parent = infoBox, ZIndex = 257,
+        Position = UDim2.new(0.4, 0, 0, 28), Size = UDim2.new(0.6, -8, 0, 18),
         BackgroundTransparency = 1, Text = config.GameName, TextSize = 11,
         TextColor3 = Theme.Accent,
         TextXAlignment = Enum.TextXAlignment.Right,
     }, "bold")
 
-    -- Version label
-    mkText("TextLabel", { Parent = Content, ZIndex = 255,
-        Position = UDim2.fromOffset(14, 76),
-        Size = UDim2.fromOffset(L - 28, 14),
+    -- Version label sits between info box and the Load button.
+    mkText("TextLabel", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, 80),
+        Size = UDim2.fromOffset(L, 12),
         BackgroundTransparency = 1, Text = "v" .. config.Version, TextSize = 11,
         TextColor3 = Theme.TextDim,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, "reg")
 
-    -- Load button (sits near the bottom of Content, in the left panel).
-    local btnOuter = mk("TextButton", { Parent = Content, ZIndex = 255,
-        Position = UDim2.fromOffset(14, CH - 36),
-        Size = UDim2.fromOffset(L - 28, 22),
+    -- Load button — SLIDER-STYLE. Same vertical gradient track (52→68 / hover
+    -- 62→78) as in-menu sliders, plus a faux "filled" portion when hovered.
+    -- The button + progress bar share the same Y slot so the progress bar
+    -- visually replaces the button on click.
+    local btnY = IH - 34
+    local btnOuter = mk("TextButton", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, btnY),
+        Size = UDim2.fromOffset(L, 22),
         BackgroundColor3 = Theme.SliderTop, BorderSizePixel = 0,
         Text = "", AutoButtonColor = false, Active = true })
     local btnGrad = vGradient(btnOuter, Theme.SliderTop, Theme.SliderBottom)
-    applyLayeredStrokes(btnOuter, "inner")
-    local btnLabel = mkText("TextLabel", { Parent = btnOuter, ZIndex = 256,
+    inkBorder(btnOuter)
+    local btnLabel = mkText("TextLabel", { Parent = btnOuter, ZIndex = 257,
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
         Text = "Load", TextSize = 12, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
     }, "bold")
-    -- Hover swap to brighter gradient
     btnOuter.MouseEnter:Connect(function()
         if btnGrad then
             btnGrad.Color = ColorSequence.new{
@@ -2323,22 +2440,39 @@ function Library:ShowLoader(config)
         end
     end)
 
-    -- Progress bar (hidden until Load is pressed) — sits at the button's slot.
-    local progOuter = mk("Frame", { Parent = Content, ZIndex = 255,
-        Position = UDim2.fromOffset(14, CH - 36),
-        Size = UDim2.fromOffset(L - 28, 8),
-        BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0,
+    -- Progress bar — SLIDER-STYLE track + accent fill gradient. Track uses
+    -- the same SliderTop→SliderBottom vertical gradient + ink border that
+    -- in-menu sliders use; fill uses accentGradStops (Accent → darker Accent)
+    -- so it visually reads as "a slider whose value is being driven by load
+    -- progress". 22px tall matches the button slot exactly.
+    local progOuter = mk("Frame", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, btnY),
+        Size = UDim2.fromOffset(L, 22),
+        BackgroundColor3 = Theme.SliderTop, BorderSizePixel = 0,
         Visible = false })
-    applyLayeredStrokes(progOuter, "inner")
-    local progFill = mk("Frame", { Parent = progOuter, ZIndex = 256,
-        Position = UDim2.fromOffset(1, 1),
-        Size = UDim2.new(0, 0, 1, -2),
+    vGradient(progOuter, Theme.SliderTop, Theme.SliderBottom)
+    inkBorder(progOuter)
+    local progFill = mk("Frame", { Parent = progOuter, ZIndex = 257,
+        Position = UDim2.fromScale(0, 0),
+        Size = UDim2.fromScale(0, 1),
         BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
+    do
+        local at, ab = accentGradStops()
+        vGradient(progFill, at, ab)
+    end
+    -- Bold "Loading..." text overlay centered on the progress bar — same way
+    -- the slider's value text rides on top of its track.
+    local progText = mkText("TextLabel", { Parent = progOuter, ZIndex = 258,
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        Text = "", TextSize = 11, TextColor3 = Theme.TextActive,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
+    }, "bold")
 
-    -- Status label below the progress bar
-    local statusLbl = mkText("TextLabel", { Parent = Content, ZIndex = 255,
-        Position = UDim2.fromOffset(14, CH - 22),
-        Size = UDim2.fromOffset(L - 28, 12),
+    -- Status label below the progress bar (e.g. "Loading modules...").
+    local statusLbl = mkText("TextLabel", { Parent = ContentInner, ZIndex = 256,
+        Position = UDim2.fromOffset(0, IH - 12),
+        Size = UDim2.fromOffset(L, 12),
         BackgroundTransparency = 1, Text = "", TextSize = 11,
         TextColor3 = Theme.TextDim, TextTransparency = 1,
         TextXAlignment = Enum.TextXAlignment.Center,
@@ -2347,30 +2481,30 @@ function Library:ShowLoader(config)
 
     -- ── RIGHT PANEL: PATCHNOTES (only when present) ───────────────────────
     if hasPatch then
-        -- Vertical separator down the middle of Content.
-        mk("Frame", { Parent = Content, ZIndex = 255,
-            Position = UDim2.fromOffset(L, 10),
-            Size = UDim2.new(0, 1, 1, -20),
+        -- Vertical separator: 10px right of left panel.
+        mk("Frame", { Parent = ContentInner, ZIndex = 256,
+            Position = UDim2.fromOffset(L + 10, 0),
+            Size = UDim2.new(0, 1, 1, 0),
             BackgroundColor3 = Theme.BorderHi, BorderSizePixel = 0 })
 
-        -- Changelog header (bold)
-        mkText("TextLabel", { Parent = Content, ZIndex = 255,
-            Position = UDim2.fromOffset(L + 12, 14),
-            Size = UDim2.new(1, -(L + 26), 0, 14),
+        local rightX = L + 22
+        local rightW = IW - rightX
+
+        mkText("TextLabel", { Parent = ContentInner, ZIndex = 256,
+            Position = UDim2.fromOffset(rightX, 0),
+            Size = UDim2.fromOffset(rightW, 14),
             BackgroundTransparency = 1, Text = "Changelog", TextSize = 12,
             TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, "bold")
-        -- Accent underline
-        mk("Frame", { Parent = Content, ZIndex = 255,
-            Position = UDim2.fromOffset(L + 12, 30),
-            Size = UDim2.new(1, -(L + 26), 0, 1),
+        mk("Frame", { Parent = ContentInner, ZIndex = 256,
+            Position = UDim2.fromOffset(rightX, 16),
+            Size = UDim2.fromOffset(rightW, 1),
             BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
 
-        -- Scrollable list
-        local scroll = mk("ScrollingFrame", { Parent = Content, ZIndex = 255,
-            Position = UDim2.fromOffset(L + 12, 36),
-            Size = UDim2.new(1, -(L + 26), 1, -46),
+        local scroll = mk("ScrollingFrame", { Parent = ContentInner, ZIndex = 256,
+            Position = UDim2.fromOffset(rightX, 22),
+            Size = UDim2.fromOffset(rightW, IH - 22),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             ScrollBarThickness = 2,
             ScrollBarImageColor3 = Theme.Accent,
@@ -2467,10 +2601,15 @@ function Library:ShowLoader(config)
 
         for _, st in stages do
             statusLbl.Text = tostring(st[2] or "")
+            local pct = math.floor(st[1] * 100 + 0.5)
+            progText.Text = pct .. "%"
             pcall(function()
+                -- progFill is now fromScale(1, 1) at full and fromScale(0, 1)
+                -- at zero — tween to scaleX = st[1]. Matches slider's fill
+                -- shape, no -2px inset (slider fill is also fromScale(frac, 1)).
                 TweenService:Create(progFill,
                     TweenInfo.new(stageTime * 0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-                    { Size = UDim2.new(st[1], 0, 1, -2) }
+                    { Size = UDim2.new(st[1], 0, 1, 0) }
                 ):Play()
             end)
             task.wait(stageTime)
@@ -2597,21 +2736,55 @@ function Library:HideLoader()
     end
 end
 
--- Watermark — small label at top-right above the main window. Optional;
--- main.lua doesn't currently use it but sanyui exposes the API so we
--- match for drop-in compatibility.
+-- Watermark — top-right floating panel matching the GameScat base watermark:
+-- outer 5-stroke layered border + inner Main with its own 5-stroke + rainbow
+-- strip + 1px black shadow + bold label centered horizontally + vertically.
+-- This is the SAME chrome the notification toast uses, just persistent
+-- instead of fade-and-destroy. Width is automatic — grows to fit the text
+-- (recomputed by Library:SetWatermark via measureText).
 local Watermark = mk("Frame", { Parent = ScreenGui,
-    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 10),
-    Size = UDim2.fromOffset(180, 22),
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -10, 0, 10),
+    Size = UDim2.fromOffset(180, 24),
     BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
     Visible = false, ZIndex = 190 })
-applyLayeredStrokes(Watermark, "inner")
-local watermarkLbl = mkText("TextLabel", { Parent = Watermark,
-    Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-    Text = "", TextSize = 11, TextColor3 = Theme.TextActive,
+applyLayeredStrokes(Watermark, "outer")
+
+-- Inner Main frame — TabBg + 5-stroke inner border (the "main" sub-layer in
+-- the base watermark). Inset 1px from outer so the outer border lines stay
+-- visible at the same time as the inner ones.
+local WatermarkMain = mk("Frame", { Parent = Watermark,
+    Size = UDim2.new(1, -2, 1, -2), Position = UDim2.fromOffset(1, 1),
+    BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
+applyLayeredStrokes(WatermarkMain, "inner")
+
+-- Rainbow strip + 1px shadow under it (base watermark parity).
+local watermarkRb = mk("Frame", { Parent = WatermarkMain, ZIndex = 192,
+    Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
+    BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
+do
+    local g = Instance.new("UIGradient"); g.Name = "\0"
+    g.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   Theme.RainbowA),
+        ColorSequenceKeypoint.new(0.5, Theme.RainbowB),
+        ColorSequenceKeypoint.new(1,   Theme.RainbowC),
+    }
+    g.Parent = watermarkRb
+end
+mk("Frame", { Parent = WatermarkMain, ZIndex = 193,
+    Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
+    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
+    BorderSizePixel = 0 })
+
+-- Label — sits below the rainbow strip so it has clean breathing room.
+local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
+    Position = UDim2.fromOffset(8, 8),
+    Size = UDim2.new(1, -16, 1, -10),
+    BackgroundTransparency = 1, Text = "",
+    TextSize = 11, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
     TextYAlignment = Enum.TextYAlignment.Center,
-    ZIndex = 191,
+    TextTruncate = Enum.TextTruncate.AtEnd,
 }, "bold")
 -- ══════════════════════════════════════════════════════════════════════════
 -- KEYBIND HUD — draggable on-screen panel that auto-shows every KeyPicker's
@@ -2666,6 +2839,58 @@ end
 
 Library.KeybindFrame     = KeybindFrame
 Library.KeybindContainer = KeybindFrame   -- sanyui alias
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- KEYBIND HUD POPULATOR — iterates Library._KeyPickers each frame and shows
+-- one label per ACTIVE bind (kp:GetState() == true). Hold-mode binds appear
+-- only while the key is held; Toggle-mode binds appear after the key is
+-- flipped on; Always-mode binds appear at all times; Off-mode binds are
+-- hidden. Each keypicker gets a single label parented under KeybindFrame —
+-- created lazily the first time it goes active so we don't pre-create labels
+-- for keybinds the user never enables.
+--
+-- Title visibility: the "keybinds" title only shows when at least one bind
+-- is active, so the HUD looks empty (gone) rather than a lonely title.
+-- ══════════════════════════════════════════════════════════════════════════
+do
+    local function ensureHudLabel(kp)
+        if kp._hudLabel and kp._hudLabel.Parent then return kp._hudLabel end
+        kp._hudLabel = mkText("TextLabel", { Parent = KeybindFrame,
+            Size = UDim2.new(1, 0, 0, 12), BackgroundTransparency = 1,
+            Text = "", TextSize = 11, TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            LayoutOrder = 1, ZIndex = 181, Visible = false,
+        }, "reg")
+        return kp._hudLabel
+    end
+
+    track(RunService.Heartbeat:Connect(function()
+        if Library.Unloaded then return end
+        if not Library._KeyPickers then return end
+        local anyActive = false
+        for _, kp in Library._KeyPickers do
+            local active = false
+            local ok, state = pcall(kp.GetState, kp)
+            if ok and state then active = true end
+            local lbl = kp._hudLabel
+            if active then
+                lbl = ensureHudLabel(kp)
+                local keyTxt = (kp.Value and kp.Value ~= "None" and kp.Value ~= "") and kp.Value or "-"
+                lbl.Text = "[" .. keyTxt .. "] " .. (kp._label or "")
+                if not lbl.Visible then lbl.Visible = true end
+                anyActive = true
+            elseif lbl and lbl.Visible then
+                lbl.Visible = false
+            end
+        end
+        -- Hide the title (and effectively the whole HUD) when no binds are
+        -- active. Keeps the screen clean during downtime.
+        if KeybindTitle.Visible ~= anyActive then
+            KeybindTitle.Visible = anyActive
+        end
+    end))
+end
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- BUILD FONT SECTION — drop a font-picker dropdown into the caller's
@@ -2880,7 +3105,10 @@ function Library:SetWatermark(text)
     if Watermark.Visible then
         pcall(function()
             local w = measureText(text, 11, "bold")
-            Watermark.Size = UDim2.fromOffset(math.max(80, w + 20), 22)
+            -- Height 24 = matches the outer+inner+rainbow layered-watermark
+            -- chrome built above (4px top rainbow band + 16px label slot + 4px
+            -- bottom padding). Width grows with text + 20px breathing.
+            Watermark.Size = UDim2.fromOffset(math.max(80, w + 20), 24)
         end)
     end
 end
