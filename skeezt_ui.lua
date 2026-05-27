@@ -687,9 +687,10 @@ local function attachWidgets(target, body)
         local FLAT      = Color3.fromRGB(34, 34, 34)
         local FLAT_HOV  = Color3.fromRGB(44, 44, 44)
         -- Button is text-LESS so the visible label lives in a child
-        -- TextLabel we can position independently. Label sits 1px BELOW
-        -- the button's vertical centerline (user reverted the earlier
-        -- 2px-up direction: "buttons label doch 1px runter").
+        -- TextLabel we can position independently. Label sits 1px ABOVE
+        -- the button's vertical centerline (user spec "button text 1px
+        -- höher" — the natural Y=center reads slightly low at TextSize 12
+        -- against the inkBorder bottom).
         local btn = mk("TextButton", { Parent = body,
             Size = UDim2.new(1, 0, 0, 14),
             BackgroundColor3 = FLAT, BorderSizePixel = 0,
@@ -698,7 +699,7 @@ local function attachWidgets(target, body)
         })
         inkBorder(btn)
         mkText("TextLabel", { Parent = btn,
-            Position = UDim2.fromOffset(0, 1),
+            Position = UDim2.fromOffset(0, -1),
             Size = UDim2.fromScale(1, 1),
             BackgroundTransparency = 1,
             Text = opt.Text or id, TextSize = 12,
@@ -1655,14 +1656,15 @@ local function attachWidgets(target, body)
         applyFont(field, "reg")
         applyTextOutline(field)
         inkBorder(field)
-        -- PaddingTop = 2 with PaddingBottom = 0 shifts the vertically-
-        -- centered text 1px DOWN within the 14px field: renderable area
-        -- 2..14 (12 tall), TextYAlignment.Center lands at Y=8 instead of
-        -- the natural Y=7. User reverted earlier 2px-up direction:
-        -- "input field doch 1px runter".
+        -- PaddingBottom = 2 with PaddingTop = 0 shifts the vertically-
+        -- centered text 1px UP within the 14px field: renderable area
+        -- 0..12 (12 tall), TextYAlignment.Center lands at Y=6 instead of
+        -- the natural Y=7. User spec: "input field text 1px höher" (same
+        -- offset as buttons so a button next to an input visually
+        -- aligns).
         local pad = Instance.new("UIPadding"); pad.Name = "\0"
         pad.PaddingLeft   = UDim.new(0, 5); pad.PaddingRight  = UDim.new(0, 5)
-        pad.PaddingTop    = UDim.new(0, 2); pad.PaddingBottom = UDim.new(0, 0)
+        pad.PaddingTop    = UDim.new(0, 0); pad.PaddingBottom = UDim.new(0, 2)
         pad.Parent = field
 
         local input = { Type = "Input", Value = opt.Default or "", Callback = opt.Callback }
@@ -1929,7 +1931,7 @@ function Library:CreateWindow(opts)
             Size = UDim2.fromOffset(chipW, 12),
             Position = UDim2.fromOffset(8, -7),
             BackgroundTransparency = 1,
-            Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
+            Text = titleStr, TextSize = 11, TextColor3 = Theme.Accent,
             TextXAlignment = Enum.TextXAlignment.Center,
             TextYAlignment = Enum.TextYAlignment.Center,
             ZIndex = 7,
@@ -1999,7 +2001,7 @@ function Library:CreateWindow(opts)
                 Size = UDim2.fromOffset(chipW, 12),
                 Position = UDim2.fromOffset(8, -7),
                 BackgroundTransparency = 1,
-                Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
+                Text = titleStr, TextSize = 11, TextColor3 = Theme.Accent,
                 TextXAlignment = Enum.TextXAlignment.Center,
                 TextYAlignment = Enum.TextYAlignment.Center,
                 ZIndex = 7,
@@ -3312,16 +3314,17 @@ local WatermarkMain = mk("Frame", { Parent = Watermark,
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
--- Label fills Main with 4px padding each side per user spec.
--- Y=-1 nudges the label one pixel up from Main's vertical centerline so
--- the glyph baseline sits visually flush with the inner-stroke top edge.
+-- Label fills Main with 5px padding each side per user spec
+-- ("5px abstand vom text start zu border links und 5px von textende zu
+-- border rechts"). Y=-1 nudges the label one pixel up so the glyph
+-- baseline sits flush with the inner-stroke top edge.
 -- TextTruncate REMOVED — it caused TextBounds to return the truncated
 -- width (post-render), which made SetWatermark's measure-then-size loop
 -- accumulate padding as fields were added (positive-feedback bug the
 -- user reported: "wird mehr abstand desto mehr man auswählt").
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
-    Position = UDim2.fromOffset(4, -1),
-    Size = UDim2.new(1, -8, 1, 0),
+    Position = UDim2.fromOffset(5, -1),
+    Size = UDim2.new(1, -10, 1, 0),
     BackgroundTransparency = 1, Text = "",
     TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
@@ -3754,34 +3757,31 @@ function Library:SetWatermark(text)
     Watermark.Visible = (text ~= nil and text ~= "")
     if Watermark.Visible then
         pcall(function()
-            -- ONLY use TextService:GetTextSize. The previous max(TextBounds,
-            -- TextService, measureText) approach hit two compounding bugs:
-            --   1. TextBounds reflects the TRUNCATED rendered width when
-            --      TextTruncate is active — so as the label grew, TextBounds
-            --      grew, watermark grew, TextBounds reported the now-wider
-            --      bounds, watermark grew more. Removed TextTruncate from
-            --      watermarkLbl to break this feedback path.
-            --   2. measureText's 0.62 multiplier overshoots Verdana Bold's
-            --      actual ~0.55 advance, so its result was always 10-15%
-            --      too wide. Taking the max() with it meant every call
-            --      picked the overshoot. Drop it from the path entirely.
-            -- TextService:GetTextSize w/ SourceSansBold is metric-close to
-            -- our custom Verdana Bold (~±2px on a 30-char string) and is
-            -- synchronous + truncation-agnostic.
-            -- Chrome budget +28 = 10+10 outer-band inset + 4+4 label-to-main
-            -- padding (matches the watermarkLbl layout exactly). Floor 120px.
+            -- Width = max(TextService bound, measureText) + chrome.
+            -- TextService:GetTextSize(SourceSansBold) is narrower than the
+            -- live-rendered Verdana Bold custom font on the label, so using
+            -- TS alone undersized the watermark and the actual glyphs
+            -- collided with the inner stroke ("texte collidieren jetzt").
+            -- Taking max() picks the safer of the two:
+            --   • TS gives the precise SourceSans width (truncation-agnostic)
+            --   • measureText (mult 0.62) overestimates ~5-10% — that
+            --     overestimate is what compensates for the Verdana-vs-
+            --     SourceSans glyph-advance gap.
+            -- TextTruncate was removed from watermarkLbl earlier to break
+            -- the truncation-feedback growth bug, so neither path picks up
+            -- truncated bounds.
+            -- Chrome budget +30 = 10+10 outer-band inset + 5+5 label-to-main
+            -- padding (user spec: 5px text→border on each side). Floor 120px.
             local TS = game:GetService("TextService")
-            local textW
+            local tsW = 0
             local ok, b = pcall(function()
                 return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
                     Vector2.new(99999, 14))
             end)
-            if ok and b and b.X > 0 then
-                textW = b.X
-            else
-                textW = measureText(text, 12, "bold")
-            end
-            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 28), 54)
+            if ok and b then tsW = b.X end
+            local mW = measureText(text, 12, "bold")
+            local textW = math.max(tsW, mW)
+            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 30), 54)
         end)
     end
 end
