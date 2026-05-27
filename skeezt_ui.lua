@@ -2264,28 +2264,67 @@ function Library:SetBackgroundImage(url)
         return true
     end
     if type(url) ~= "string" or not url:match("^https?://") then
-        if self.Notify then self:Notify("Invalid image URL", 3) end
+        if self.Notify then self:Notify("Invalid image URL (need http/https)", 4) end
         return false, "invalid url"
     end
-    -- Per-URL filename so a re-paste of a different URL re-downloads.
-    -- The previous regex-escape produced 80-char-truncated names that
-    -- collided across similar URLs; include a short hash for uniqueness.
-    local hash = 0
-    for i = 1, #url do hash = (hash * 33 + url:byte(i)) % 0x7FFFFFFF end
-    local fname = "nachtara_userbg_" .. tostring(hash) .. ".png"
-    local ok = ensureFile(fname, url)
-    if not ok then
-        if self.Notify then self:Notify("Failed to download image", 3) end
+    if type(writefile) ~= "function" or type(customAsset) ~= "function" then
+        if self.Notify then self:Notify("Executor lacks writefile/customAsset", 4) end
+        return false, "no executor api"
+    end
+
+    -- ALWAYS re-download. The previous flow used ensureFile() which
+    -- short-circuited when the cached file existed, so a corrupt/failed
+    -- earlier attempt (HTML page saved as .png, partial transfer, etc.)
+    -- would cache forever and the user could never recover by re-pasting.
+    local body
+    local okHttp = pcall(function() body = game:HttpGet(url) end)
+    if not okHttp or type(body) ~= "string" or #body < 256 then
+        local sz = (type(body) == "string") and #body or "nil"
+        if self.Notify then
+            self:Notify("HttpGet failed (" .. tostring(sz) .. " bytes)", 5)
+        end
         return false, "download failed"
     end
-    local asset = customAsset(fname)
-    if not asset then
-        if self.Notify then self:Notify("Failed to register image asset", 3) end
+
+    -- Magic-byte sniff. If the response is an HTML page (e.g. user pasted a
+    -- gdrive viewer link, an imgur album URL, a Discord CDN link that 403d
+    -- into a login page) customAsset will still register it but the asset
+    -- renders as the missing-texture grid. Catch this early.
+    local b1, b2, b3, b4 = body:byte(1, 4)
+    b1, b2, b3, b4 = b1 or 0, b2 or 0, b3 or 0, b4 or 0
+    local kind
+    if b1 == 0x89 and b2 == 0x50 and b3 == 0x4E and b4 == 0x47 then kind = "png"
+    elseif b1 == 0xFF and b2 == 0xD8 then kind = "jpg"
+    elseif b1 == 0x47 and b2 == 0x49 and b3 == 0x46 then kind = "gif"
+    elseif b1 == 0x42 and b2 == 0x4D then kind = "bmp"
+    elseif b1 == 0x52 and b2 == 0x49 and b3 == 0x46 and b4 == 0x46 then kind = "webp"
+    end
+    if not kind then
+        local hex = string.format("%02X%02X%02X%02X", b1, b2, b3, b4)
+        if self.Notify then
+            self:Notify("URL is not a direct image (" .. hex ..
+                "). Use the raw image link, not a page.", 6)
+        end
+        return false, "not an image"
+    end
+
+    local hash = 0
+    for i = 1, #url do hash = (hash * 33 + url:byte(i)) % 0x7FFFFFFF end
+    local fname = "nachtara_userbg_" .. tostring(hash) .. "." .. kind
+    local okWrite = pcall(writefile, fname, body)
+    if not okWrite then
+        if self.Notify then self:Notify("Failed to write image to disk", 4) end
+        return false, "writefile failed"
+    end
+
+    local asset
+    local okAsset = pcall(function() asset = customAsset(fname) end)
+    if not okAsset or not asset then
+        if self.Notify then self:Notify("Failed to register image asset", 4) end
         return false, "asset register failed"
     end
+
     Library._BgCurrentURL = url
-    -- Walk every registered BG ImageLabel + swap. Use ipairs because
-    -- _BgImageInstances is a plain array now.
     local applied = 0
     for _, img in self._BgImageInstances do
         if img and img.Parent then
@@ -2293,8 +2332,13 @@ function Library:SetBackgroundImage(url)
             applied = applied + 1
         end
     end
-    if applied == 0 and self.Notify then
-        self:Notify("Image loaded but no Window to apply it to", 3)
+    if self.Notify then
+        if applied == 0 then
+            self:Notify("Background queued (no Window yet)", 3)
+        else
+            self:Notify("Background applied (" .. kind .. ", " .. applied ..
+                " window" .. (applied == 1 and "" or "s") .. ")", 3)
+        end
     end
     return true
 end
@@ -2349,60 +2393,59 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Width = approx text width + 16px breathing.
-    local w = math.max(80, measureText(text, 11, "reg") + 16)
-    local h = 24
+    -- Width = text + Main side-inset (8+8) + Main side-padding (8+8) breathing.
+    local w = math.max(140, measureText(text, 11, "reg") + 40)
+    -- Height grew from 24 → 38 so the OUTER 5-stroke chrome (6px deep at the
+    -- -6 offset) and INNER Main (with its own 5-stroke composite) both have
+    -- room to render. Mirrors the Watermark proportions in miniature.
+    local h = 38
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
     local ax = 0
     if Library.NotificationPosition == "TopRight" then ax = 1
     elseif Library.NotificationPosition == "Middle" then ax = 0.5 end
 
-    -- Outer: WindowBg with 5-stroke OUTER pattern (matches BASE watermark)
+    -- Outer: WindowBg with the SAME 5-stroke OUTER composite the main menu
+    -- and Watermark use (applyLayeredStrokes "outer" pattern). User feedback:
+    -- "notifications have no border? add the 5px one from the main menu".
+    -- Strokes are created via applyLayeredStrokes so theme updates propagate,
+    -- but we capture them here to drive the fade-in/out animation.
     local outer = mk("Frame", { Parent = NotifyArea,
         AnchorPoint = Vector2.new(ax, 0),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
         Size = UDim2.fromOffset(0, h), ZIndex = 200 })
-    -- Strokes are pre-built but we keep them transparent until fade-in.
+    applyLayeredStrokes(outer, "outer")
     local outerStrokes = {}
-    do
-        local set = {
-            { off =  0, t = 1, c = Theme.BorderDark },
-            { off = -1, t = 1, c = Theme.BorderHi   },
-            { off = -4, t = 3, c = Theme.BorderMid  },
-            { off = -5, t = 1, c = Theme.BorderHi   },
-            { off = -6, t = 1, c = Theme.BorderDark },
-        }
-        for _, s in set do
-            local st = Instance.new("UIStroke"); st.Name = "\0"
-            st.Color = s.c; st.Thickness = s.t; st.Transparency = 1
-            st.LineJoinMode = Enum.LineJoinMode.Miter
-            st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-            st.BorderOffset = UDim.new(0, s.off)
-            st.Parent = outer
-            outerStrokes[#outerStrokes + 1] = st
+    for _, c in outer:GetChildren() do
+        if c:IsA("UIStroke") then
+            c.Transparency = 1
+            outerStrokes[#outerStrokes + 1] = c
         end
     end
 
-    -- Inner Main: TabBg, FILLS Outer (no inset, no inner stroke composite).
-    -- Previously inset 1px with a 5-stroke INNER pattern, which exposed the
-    -- WindowBg ring as a visible dark inner outline (user-reported "back
-    -- outline" in the notifications screenshot). Single flat TabBg frame
-    -- gives the 5-OUTER-stroke composite room to render without a
-    -- competing inner border.
+    -- Inner Main: TabBg, inset 8px sides / top 12 / bottom 8 so the OUTER
+    -- 5-stroke composite has visible WindowBg chrome around it. Mirrors the
+    -- Watermark structure (Main is a sibling-inset under the rainbow strip).
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
-        Size = UDim2.fromScale(1, 1),
-        Position = UDim2.fromOffset(0, 0), ZIndex = 201 })
-    local innerStrokes = {}   -- kept (empty) for the fade-in loop below
+        Size = UDim2.new(1, -16, 1, -20),
+        Position = UDim2.fromOffset(8, 12), ZIndex = 201 })
+    applyLayeredStrokes(main, "inner")
+    local innerStrokes = {}
+    for _, c in main:GetChildren() do
+        if c:IsA("UIStroke") then
+            c.Transparency = 1
+            innerStrokes[#innerStrokes + 1] = c
+        end
+    end
 
-    -- Rainbow strip + shadow (base-watermark parity). Stretched 2px wider on
-    -- each side compared to the original (was -12/+6 → now -8/+4) — user
-    -- reported the rainbow looked cropped against the notification edges.
-    local rb = mk("Frame", { Parent = main, ZIndex = 202,
-        Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 4),
+    -- Rainbow strip + shadow — sibling of Main inside Outer (matches the
+    -- Watermark layout). Y=4 leaves 2px above the rainbow inside the outer
+    -- chrome zone. Width inset 12px each side to clear the outer chrome.
+    local rb = mk("Frame", { Parent = outer, ZIndex = 202,
+        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 4),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
         BackgroundTransparency = 1 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
@@ -2412,18 +2455,17 @@ function Library:Notify(text, duration)
         ColorSequenceKeypoint.new(1,   Theme.RainbowC),
     }
     rbGrad.Parent = rb
-    local rbShadow = mk("Frame", { Parent = main, ZIndex = 203,
-        Size = UDim2.new(1, -8, 0, 1), Position = UDim2.fromOffset(4, 5),
+    local rbShadow = mk("Frame", { Parent = outer, ZIndex = 203,
+        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 5),
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label — raised again per user feedback ("texts in notifications a
-    -- little higher"). Sits 2px below the rainbow shadow row (Y=4+1 ≈
-    -- bottom of shadow → 4px text top). Height 12 with vertical-center
-    -- alignment so the glyph baseline lines up with the rainbow visually.
+    -- Label fills Main vertically-centered (Main height = h-20 = 18px,
+    -- comfortably fits the 11px text + outline). 8px horizontal padding
+    -- inside Main keeps the inner 5-stroke clear of the glyphs.
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Position = UDim2.fromOffset(8, 4),
-        Size = UDim2.new(1, -16, 0, 14),
+        Position = UDim2.fromOffset(8, 0),
+        Size = UDim2.new(1, -16, 1, 0),
         BackgroundTransparency = 1, Text = text,
         TextSize = 11, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Left,
