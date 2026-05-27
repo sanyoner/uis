@@ -177,7 +177,7 @@ local function loadCustomFont(cachedTtfPath, ghTtfName, familyName)
 end
 
 local FONT_REG, FONT_BOLD, FONT_PIXEL, BG_ASSET
-FONT_REG   = loadCustomFont("VerdanaNormal.ttf",  "Verdana-Font.ttf",     "Verdana")
+FONT_REG   = loadCustomFont("FsTahoma8px.ttf",  "fs-tahoma-8px.ttf",     "FsTahoma8px")
 FONT_BOLD  = loadCustomFont("VerdanaBold.ttf",    "Verdana-Bold.ttf",     "VerdanaBold")
 FONT_PIXEL = loadCustomFont("SmallestPixel.ttf",  "smallest_pixel-7.ttf", "SmallestPixel")
 
@@ -190,7 +190,7 @@ FONT_PIXEL = loadCustomFont("SmallestPixel.ttf",  "smallest_pixel-7.ttf", "Small
 -- custom face as soon as it loads.
 task.defer(function()
     if not FONT_REG then
-        FONT_REG = loadCustomFont("VerdanaNormal.ttf", "Verdana-Font.ttf", "Verdana")
+        FONT_REG = loadCustomFont("FsTahoma8px.ttf", "fs-tahoma-8px.ttf", "FsTahoma8px")
     end
     if not FONT_BOLD then
         FONT_BOLD = loadCustomFont("VerdanaBold.ttf", "Verdana-Bold.ttf", "VerdanaBold")
@@ -225,6 +225,14 @@ end
 -- still renders (worst case: Roblox Legacy, but only if HTTPS + workspace
 -- caches both failed which should never happen in practice).
 local function applyFont(textInst, kind)
+    -- Stamp the kind so dispatchFontChange's "Default" path can restore the
+    -- per-widget face (bold titles / pixel keybinds / regular labels) — vs
+    -- the user-picked custom font which overrides ALL kinds uniformly.
+    local stampKind = (kind == "bold" and "bold")
+                   or (kind == "pixel" and "pixel")
+                   or "reg"
+    pcall(function() textInst:SetAttribute("nachFontKind", stampKind) end)
+
     local f
     if kind == "bold" then
         f = FONT_BOLD or FONT_REG or FONT_PIXEL
@@ -239,10 +247,61 @@ end
 -- ══════════════════════════════════════════════════════════════════════════
 -- HELPERS
 -- ══════════════════════════════════════════════════════════════════════════
+
+-- Color3 properties on Frames / Strokes / Text instances that can be
+-- driven by Theme. Used by mk() to auto-stamp instances with the Theme
+-- key they were constructed against, so a later theme change can walk
+-- descendants and re-apply.
+local COLOR_PROPS = { "BackgroundColor3", "TextColor3", "Color",
+                      "PlaceholderColor3", "ScrollBarImageColor3", "ImageColor3" }
+
+-- Build a reverse "Color3 → themeKey" lookup. Two Theme entries might
+-- happen to share the same RGB (e.g. SliderTopHov and BorderHi == 61,61,61);
+-- the first-seen key wins, which is fine for our purpose since both keys
+-- track the same color anyway.
+local function rebuildThemeReverse()
+    local r = {}
+    for k, v in Theme do
+        if typeof(v) == "Color3" then
+            local hash = string.format("%d,%d,%d",
+                math.floor(v.R * 255 + 0.5),
+                math.floor(v.G * 255 + 0.5),
+                math.floor(v.B * 255 + 0.5))
+            if not r[hash] then r[hash] = k end
+        end
+    end
+    return r
+end
+local _themeReverse = rebuildThemeReverse()
+
+local function colorHash(c)
+    return string.format("%d,%d,%d",
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5))
+end
+
+local function stampThemeKey(inst, prop, color)
+    if typeof(color) ~= "Color3" then return end
+    local key = _themeReverse[colorHash(color)]
+    if not key then return end
+    pcall(function() inst:SetAttribute("nachTC_" .. prop, key) end)
+end
+
 local function mk(class, props)
     local inst = Instance.new(class)
     inst.Name = "\0"
-    if props then for k, v in props do pcall(function() inst[k] = v end) end end
+    if props then
+        for k, v in props do
+            pcall(function() inst[k] = v end)
+            -- Auto-stamp Theme-derived Color3 properties so the theme
+            -- registry can update them later. Cheap (1 string hash per
+            -- Color3 prop) and skipped for non-Color3 values.
+            if typeof(v) == "Color3" then
+                stampThemeKey(inst, k, v)
+            end
+        end
+    end
     return inst
 end
 
@@ -302,6 +361,7 @@ local function applyLayeredStrokes(host, kind)
         st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
         st.BorderOffset = UDim.new(0, s.off)
         st.Parent = host
+        stampThemeKey(st, "Color", s.c)
     end
 end
 
@@ -346,6 +406,7 @@ local function inkBorder(parent)
     s.LineJoinMode = Enum.LineJoinMode.Miter
     s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     s.Parent = parent
+    stampThemeKey(s, "Color", Theme.BorderInk)
     return s
 end
 
@@ -561,6 +622,14 @@ local function attachWidgets(target, body)
         end
         toggle:SetValue(toggle.Value, true)
 
+        -- Theme switch handler: re-run applyVisual so the checkbox gradient
+        -- picks up the new Theme.Accent value (when toggled on) or the new
+        -- ChkTop/ChkBottom shades (when off).
+        Library:OnColorUpdate(function()
+            if not box.Parent then return end
+            applyVisual()
+        end)
+
         track(clickArea.MouseButton1Click:Connect(function()
             toggle:SetValue(not toggle.Value)
         end))
@@ -704,7 +773,19 @@ local function attachWidgets(target, body)
         local fill = mk("Frame", { Parent = bar, Size = UDim2.fromScale(0, 1),
             BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
         local at, ab = accentGradStops()
-        vGradient(fill, at, ab)
+        local fillGrad = vGradient(fill, at, ab)
+        -- Re-apply the accent gradient on theme switch so slider fill
+        -- repaints live. fill.BackgroundColor3 auto-updates via the color
+        -- registry (mk stamped Theme.Accent), but the UIGradient stops
+        -- are a HSV-darker derived shade and need explicit refresh.
+        Library:OnColorUpdate(function()
+            if not fill.Parent then return end
+            local nat, nab = accentGradStops()
+            fillGrad.Color = ColorSequence.new{
+                ColorSequenceKeypoint.new(0, nat),
+                ColorSequenceKeypoint.new(1, nab),
+            }
+        end)
 
         -- Value text — anchored at the fill's right edge (the grab tip),
         -- centered on it per skeezt source. We re-position the label every
@@ -2043,7 +2124,10 @@ end
 -- RegisterFontsFromRepo to bulk-load a list from a github base URL.
 -- ══════════════════════════════════════════════════════════════════════════
 Library.Fonts          = {}
-Library.CurrentFont    = FONT_REG   -- start with our loaded Verdana Regular
+Library.CurrentFont    = FONT_REG   -- listener-fanout font; per-widget kinds
+                                    -- (bold/pixel/reg) still resolve per-call.
+Library._DefaultMode   = true       -- start in "Default" → per-widget kinds.
+                                    -- Custom font dropdown flips this off.
 Library.FontListeners  = {}
 
 function Library:GetActiveFont()
@@ -2055,17 +2139,35 @@ function Library:OnFontChanged(cb)
 end
 
 local function dispatchFontChange()
-    -- Re-apply the active font to every text instance under our ScreenGui
-    -- so the change is visible immediately. External script-owned text
-    -- (ESP billboards, watermark) gets the change via the listener fanout.
-    local f = Library:GetActiveFont()
-    if not f then return end
-    for _, d in ScreenGui:GetDescendants() do
-        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
-            pcall(function() d.FontFace = f end)
+    -- Two modes:
+    --   `_DefaultMode`  → restore each text instance's per-widget kind
+    --                     (bold titles / pixel keybinds / reg labels) by
+    --                     re-running applyFont with the stamped kind. This
+    --                     is what "Default" in the font dropdown should do:
+    --                     give the user back the original layered look.
+    --   custom font     → walk descendants and overwrite EVERY FontFace
+    --                     with the picked face. Bold/pixel/reg all collapse
+    --                     to one user-chosen face by design.
+    local listenerFont = Library:GetActiveFont() or FONT_REG
+    if Library._DefaultMode then
+        for _, d in ScreenGui:GetDescendants() do
+            if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                local kind = nil
+                pcall(function() kind = d:GetAttribute("nachFontKind") end)
+                pcall(function() applyFont(d, kind or "reg") end)
+            end
+        end
+    else
+        local f = Library.CurrentFont
+        if f then
+            for _, d in ScreenGui:GetDescendants() do
+                if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    pcall(function() d.FontFace = f end)
+                end
+            end
         end
     end
-    for _, cb in Library.FontListeners do pcall(cb, f) end
+    for _, cb in Library.FontListeners do pcall(cb, listenerFont) end
 end
 
 -- Register a single font (TTF URL or local path) under a chosen name.
@@ -2092,12 +2194,21 @@ end
 
 -- Switch the active font. main.lua + ESP code uses this to keep UI and
 -- world labels in sync with a user-picked option.
+--   nil / "Default" → restore the per-widget kind layout (bold titles,
+--                     pixel keybinds, regular labels). This is the SAME
+--                     layout the script renders when no font is picked,
+--                     not a hard reset to Roblox-default. The user
+--                     explicit ask: "Default should become the default
+--                     layout, like when not changing anything in fonts".
+--   <name|Font>     → override every text face with the picked font.
 function Library:SetFont(name)
-    if name == nil then
-        self.CurrentFont = FONT_REG
+    if name == nil or name == "Default" then
+        self._DefaultMode = true
+        self.CurrentFont = FONT_REG   -- for listener fanout only
     else
         local f = (typeof(name) == "Font") and name or self.Fonts[name]
         if not f then return end
+        self._DefaultMode = false
         self.CurrentFont = f
     end
     dispatchFontChange()
@@ -3058,26 +3169,17 @@ do
     track(RunService.Heartbeat:Connect(function()
         if Library.Unloaded then return end
         if not Library._KeyPickers then return end
-        local anyBound = false
-        local anyActive = false
         for _, kp in Library._KeyPickers do
-            -- Has a real key bound? (matters for OUTER visibility)
-            local hasKey = kp.Value and kp.Value ~= "None" and kp.Value ~= ""
-            if hasKey then anyBound = true end
-
             -- Is the bind currently active? (matters for inner label visibility)
             local active = false
             local ok, state = pcall(kp.GetState, kp)
             if ok and state then active = true end
-            if active then anyActive = true end
 
             local lbl = kp._hudLabel
             if active then
                 lbl = ensureHudLabel(kp)
                 -- Base G2L format (verbatim from sanyo's keybinds spec):
                 --   "[ KEY ] name : mode"
-                -- — bracketed key with INSIDE spaces, then friendly label,
-                -- then mode (lowercase) after a colon.
                 local modeStr = (kp.Mode or "Toggle"):lower()
                 lbl.Text = "[ " .. (kp.Value or "-") .. " ] " ..
                            (kp._label or "") .. " : " .. modeStr
@@ -3086,16 +3188,11 @@ do
                 lbl.Visible = false
             end
         end
-        -- Title visibility: ANY bound key keeps the title visible so the HUD
-        -- chrome stays consistent — title hides only when no keypicker has a
-        -- key set at all. Inner Tab hides when nothing is active, so the
-        -- outer chrome stays clean (rainbow + title) even with no live binds.
-        if KeybindTitle.Visible ~= anyBound then
-            KeybindTitle.Visible = anyBound
-        end
-        if KeybindTab.Visible ~= anyActive then
-            KeybindTab.Visible = anyActive
-        end
+        -- Title + Tab stay visible at all times so the "Keybinds" panel
+        -- has a permanent home on the screen. Previously both hid until
+        -- a keypicker was bound/active, leaving a blank spot on load —
+        -- the user couldn't tell where the HUD lived before binding
+        -- their first key.
     end))
 end
 
@@ -3129,6 +3226,22 @@ function Library:BuildFontSection(container)
                 self:SetFont(nil)
             elseif self.Fonts[v] then
                 self:SetFont(v)
+            end
+        end,
+    })
+
+    -- Custom background image URL: paste a https://… link and the menu's
+    -- backdrop ImageLabel swaps to the downloaded asset. Empty input
+    -- reverts to the packaged skeezt_menu_bg. Validation + notify on
+    -- failure are handled by Library:SetBackgroundImage.
+    container:AddInput('LibraryBackgroundURL', {
+        Text = 'Background URL',
+        Placeholder = 'https://… (leave empty for default)',
+        Callback = function(v)
+            if not v or v == "" then
+                Library:SetBackgroundImage(nil)
+            else
+                Library:SetBackgroundImage(v)
             end
         end,
     })
@@ -3388,6 +3501,45 @@ function Library:GetDarkerColor(c)
     if typeof(c) ~= "Color3" then return c end
     local h, s, v = Color3.toHSV(c)
     return Color3.fromHSV(h, s, math.max(0, v - 0.2))
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- THEME COLOR REGISTRY — instances tagged with `nachTC_<prop>` attributes
+-- at construction time get their colored props re-applied here whenever the
+-- theme changes. ThemeManager:ApplyTheme calls UpdateColorsUsingRegistry
+-- after writing the new palette into Theme.
+--
+-- Callbacks (`Library._ColorCallbacks`) handle dynamic colors that can't be
+-- stamped via attributes — gradient stops, accent-derived darker shades,
+-- per-state mouse-hover repaints. Widgets register a callback once at
+-- construction; the callback re-pulls fresh Theme values and re-applies.
+-- ══════════════════════════════════════════════════════════════════════════
+Library._ColorCallbacks = {}
+
+function Library:OnColorUpdate(cb)
+    if type(cb) == "function" then
+        self._ColorCallbacks[#self._ColorCallbacks + 1] = cb
+    end
+end
+
+function Library:UpdateColorsUsingRegistry()
+    -- Walk every descendant of the ScreenGui and re-apply any stamped
+    -- theme colors. Cheap (~one attribute read per supported prop per
+    -- instance) and only runs on theme switch, not per-frame.
+    for _, d in ScreenGui:GetDescendants() do
+        for _, prop in COLOR_PROPS do
+            local attr
+            pcall(function() attr = d:GetAttribute("nachTC_" .. prop) end)
+            if attr then
+                local c = Theme[attr]
+                if typeof(c) == "Color3" then
+                    pcall(function() d[prop] = c end)
+                end
+            end
+        end
+    end
+    -- Fire registered callbacks for gradients / derived colors.
+    for _, cb in self._ColorCallbacks do pcall(cb) end
 end
 
 -- TextService wrapper that always uses the active custom font when measuring.
@@ -3749,10 +3901,8 @@ do
     end
 
     -- Apply a palette (hex-string table) to the library. Updates BOTH
-    -- Library.<slot> aliases AND Theme.<themeField> so subsequent widgets
-    -- render with the new colors. Doesn't retroactively repaint existing
-    -- widgets (would require a full color registry which the library
-    -- intentionally doesn't carry).
+    -- Library.<slot> aliases AND Theme.<themeField>, then walks the color
+    -- registry so existing widgets repaint live (no script reload needed).
     local function applyPalette(palette)
         for slot, hex in palette do
             local col = Color3.fromHex(hex)
@@ -3764,6 +3914,9 @@ do
             end
         end
         Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor)
+        -- Walk every theme-stamped instance + fire gradient/derived
+        -- callbacks so colors flow through to the live UI immediately.
+        Library:UpdateColorsUsingRegistry()
     end
 
     function ThemeManager:ApplyTheme(name)
@@ -3875,7 +4028,8 @@ do
             Library.Options.ThemeManager_CustomThemeList:SetValues(self:ReloadCustomThemes())
         end)
 
-        -- Live updates: changing any ColorPicker updates Library.<slot> + Theme.
+        -- Live updates: changing any ColorPicker updates Library.<slot> +
+        -- Theme + walks the color registry so existing widgets repaint.
         local function refresh()
             for _, field in THEME_FIELDS do
                 if Library.Options[field] then
@@ -3885,6 +4039,7 @@ do
                 end
             end
             Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor)
+            Library:UpdateColorsUsingRegistry()
         end
         for _, field in THEME_FIELDS do
             if Library.Options[field] then Library.Options[field]:OnChanged(refresh) end
