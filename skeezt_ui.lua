@@ -579,8 +579,12 @@ local function attachWidgets(target, body)
         -- GameSense convention to mark detection-risk features.
         local displayText = opt.Text or id
         if opt.Risky then displayText = displayText .. " *" end
+        -- Y=-1 nudges the label one pixel up from the row's vertical
+        -- centerline so it sits visually flush with the top edge of the
+        -- 6×6 checkbox at row Y=4 (the centerline alignment looked one
+        -- pixel low against the box).
         local lbl = mkText("TextLabel", { Parent = row,
-            Position = UDim2.fromOffset(15, 0),
+            Position = UDim2.fromOffset(15, -1),
             Size = UDim2.new(1, -15, 1, 0), BackgroundTransparency = 1,
             Text = displayText, TextSize = 12,
             TextColor3 = Theme.TextDim,
@@ -897,14 +901,19 @@ local function attachWidgets(target, body)
             Text = "", AutoButtonColor = false })
         inkBorder(mainBtn)
 
+        -- Built with "bold" font so the closed-button value reads as an
+        -- ACTIVE selection (matches the bold + Accent active-row look in
+        -- the popup). TextColor3 starts as TextActive and is repainted by
+        -- refresh() each time the value changes — TextActive when there's
+        -- a real selection, TextDim when the value is "None"/empty.
         local valLbl = mkText("TextLabel", { Parent = mainBtn,
             Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(5, 0),
             BackgroundTransparency = 1, Text = "", TextSize = 12,
-            TextColor3 = Theme.Text,
+            TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
             TextTruncate = Enum.TextTruncate.AtEnd,
-        }, "reg")
+        }, "bold")
         -- GS-style "-" indicator on the right (real GS uses a minus glyph,
         -- not a triangle arrow, for dropdowns)
         mkText("TextLabel", { Parent = mainBtn, Size = UDim2.fromOffset(10, 14),
@@ -929,8 +938,29 @@ local function attachWidgets(target, body)
             end
             return tostring(dd.Value or "None")
         end
-        local function refresh() valLbl.Text = fmtV() end
+        -- hasSelection: is there a NON-default-placeholder value? "None" /
+        -- nil / empty multi-set all read as "no real selection" → render
+        -- the closed-button label as dim, just like an unselected row in
+        -- the popup. Any concrete value flips to TextActive so the user
+        -- sees their pick highlighted at a glance.
+        local function hasSelection()
+            if multi then
+                if type(dd.Value) ~= "table" then return false end
+                for _ in dd.Value do return true end
+                return false
+            end
+            return dd.Value ~= nil and dd.Value ~= "None" and dd.Value ~= ""
+        end
+        local function refresh()
+            valLbl.Text = fmtV()
+            valLbl.TextColor3 = hasSelection() and Theme.TextActive or Theme.TextDim
+        end
 
+        -- Forward-declared so SetValue can call it. The actual definition
+        -- lives further down (after the popup + row code), but Lua resolves
+        -- the binding at call time — by the time anyone fires SetValue on
+        -- the live dd, refreshRows has been assigned.
+        local refreshRows
         function dd:SetValue(v, supp)
             if multi then
                 local t = {}
@@ -951,6 +981,11 @@ local function attachWidgets(target, body)
                 self.Value = t
             else self.Value = v end
             refresh()
+            -- Repaint popup row visuals so the active-row highlight tracks
+            -- the new value. Skipped during construction (refreshRows is
+            -- still nil) — the construction-time refreshRows() call below
+            -- handles the initial pass.
+            if refreshRows then refreshRows() end
             if not supp then safeCallback(self.Callback, self.Value) end
             -- Fire dependency refreshers so SetupDependencies can gate
             -- visibility off dropdown VALUES (not just toggle bool state).
@@ -994,7 +1029,10 @@ local function attachWidgets(target, body)
                 item.TextColor3 = Theme.TextDim
             end
         end
-        local function refreshRows() for v, r in rows do applyRowVisual(v, r) end end
+        -- Assigning to the forward-declared upvalue (declared above SetValue
+        -- so it can call this). Local re-declaration would shadow it and
+        -- SetValue would still see nil.
+        function refreshRows() for v, r in rows do applyRowVisual(v, r) end end
 
         -- Row builder extracted so :SetValues can rebuild dynamically (used by
         -- SaveManager to refresh the config-list dropdown after Save/Delete).
@@ -1791,14 +1829,16 @@ function Library:CreateWindow(opts)
         -- top of gb so the title text reads cleanly without border lines
         -- passing through the letters. Sibling of gb (under wrap) with
         -- higher ZIndex so it renders OVER gb's strokes.
+        -- Y shifted 2px upward (chip -2→-4, text -5→-7) per user request:
+        -- titles felt one beat too low against the top stroke band.
         mk("Frame", { Parent = wrap,
             Size = UDim2.fromOffset(titleW, 6),
-            Position = UDim2.fromOffset(11, -2),
+            Position = UDim2.fromOffset(11, -4),
             BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
             ZIndex = 6 })
         mkText("TextLabel", { Parent = wrap,
             Size = UDim2.fromOffset(titleW, 12),
-            Position = UDim2.fromOffset(11, -5),
+            Position = UDim2.fromOffset(11, -7),
             BackgroundTransparency = 1,
             Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
             TextXAlignment = Enum.TextXAlignment.Center,
@@ -1847,14 +1887,16 @@ function Library:CreateWindow(opts)
         if title and title ~= "" then
             local titleStr = tostring(title)
             local titleW = measureText(titleStr, 11, "bold") + 8
+            -- Same 2px lift as Groupbox titles (chip -2→-4, text -5→-7) so
+            -- Tabbox + Groupbox title placement stays visually consistent.
             mk("Frame", { Parent = wrap,
                 Size = UDim2.fromOffset(titleW, 6),
-                Position = UDim2.fromOffset(11, -2),
+                Position = UDim2.fromOffset(11, -4),
                 BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
                 ZIndex = 6 })
             mkText("TextLabel", { Parent = wrap,
                 Size = UDim2.fromOffset(titleW, 12),
-                Position = UDim2.fromOffset(11, -5),
+                Position = UDim2.fromOffset(11, -7),
                 BackgroundTransparency = 1,
                 Text = titleStr, TextSize = 11, TextColor3 = Theme.TextActive,
                 TextXAlignment = Enum.TextXAlignment.Center,
@@ -2393,16 +2435,17 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Width is sized EXACTLY to the text. Chrome budget = Main inset (6+6)
-    -- + label padding inside Main (4+4) = 20px total. Floor 60px so a 1-char
-    -- toast still has a visible frame. User feedback: notification was
-    -- noticeably wider than its text content — every extra pixel here was
-    -- visible empty space inside the rainbow strip.
-    local w = math.max(60, measureText(text, 11, "reg") + 20)
     -- Height: 38 leaves room for OUTER 5-stroke (6px deep) + INNER Main with
     -- its own 5-stroke composite. Mirrors the Watermark proportions in
     -- miniature.
     local h = 38
+    -- Width is determined AFTER the label is parented + has text, by reading
+    -- the live TextBounds.X (the actual rendered glyph width in the active
+    -- font). Heuristic-based estimates (#str * fontSize * mult) overshot the
+    -- real width by ~15% on most strings, so notifications were always wider
+    -- than their content. Chrome budget = Main inset (6+6) + label padding
+    -- inside Main (4+4) = 20px total. Floor 60px so a 1-char toast still
+    -- has visible chrome.
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
     local ax = 0
@@ -2484,6 +2527,18 @@ function Library:Notify(text, duration)
     for _, c in lbl:GetChildren() do
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
+
+    -- Measure the actual rendered text width. lbl.TextBounds is computed
+    -- from the glyph runs in the live font, so this matches what the user
+    -- sees pixel-for-pixel — no more 10-15% heuristic overshoot.
+    -- +1 stud margin past TextBounds is for the optional TextTruncate
+    -- ellipsis room; without it Roblox may still truncate at the last full
+    -- glyph even though TextBounds says it fits. +20 is the chrome budget
+    -- (6+6 outer-to-main + 4+4 main-to-label). Floor 60px keeps a 1-char
+    -- toast visible.
+    local textW = lbl.TextBounds.X
+    if textW < 1 then textW = measureText(text, 11, "reg") end
+    local w = math.max(60, math.ceil(textW) + 21)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -3142,10 +3197,14 @@ local WatermarkMain = mk("Frame", { Parent = Watermark,
     BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 191 })
 applyLayeredStrokes(WatermarkMain, "inner")
 
--- Label fills Main (no rainbow inside Main anymore, so centered vertically).
+-- Label fills Main with tight padding so the watermark width hugs the text.
+-- Padding 4px each side (was 8) + the 10px main-inset on each side gives a
+-- 28px chrome budget — matches the +28 used in SetWatermark's width calc.
+-- Y=-1 nudges the label one pixel up from Main's vertical centerline so
+-- the glyph baseline sits visually flush with the inner-stroke top edge.
 local watermarkLbl = mkText("TextLabel", { Parent = WatermarkMain, ZIndex = 194,
-    Position = UDim2.fromOffset(8, 0),
-    Size = UDim2.new(1, -16, 1, 0),
+    Position = UDim2.fromOffset(4, -1),
+    Size = UDim2.new(1, -8, 1, 0),
     BackgroundTransparency = 1, Text = "",
     TextSize = 12, TextColor3 = Theme.TextActive,
     TextXAlignment = Enum.TextXAlignment.Center,
@@ -3579,11 +3638,17 @@ function Library:SetWatermark(text)
     Watermark.Visible = (text ~= nil and text ~= "")
     if Watermark.Visible then
         pcall(function()
-            -- Width = text width + 16px label padding (inside Main) + 20px
-            -- outer-band chrome (10px gap on each side of Main). Height fixed
-            -- at 54 to match the base watermark G2L spec exactly.
-            local textW = measureText(text, 12, "bold")
-            Watermark.Size = UDim2.fromOffset(math.max(180, textW + 36), 54)
+            -- Width = exact rendered text width (from the label's live
+            -- TextBounds — what the user actually sees) + 28px chrome:
+            -- 10px outer band on each side of Main + 4px label padding
+            -- inside Main on each side = 28 total. Floor 120px so an
+            -- empty / single-field watermark still has a readable frame.
+            -- Old code used the measureText heuristic (#str * size *
+            -- 0.62) which overshot ~10-15% → visible empty space
+            -- (user feedback: "es ist zu viel abstand").
+            local textW = watermarkLbl.TextBounds.X
+            if textW < 1 then textW = measureText(text, 12, "bold") end
+            Watermark.Size = UDim2.fromOffset(math.max(120, math.ceil(textW) + 28), 54)
         end)
     end
 end
@@ -4304,17 +4369,12 @@ do
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        -- userId 1 = "ROBLOX" account, returns the bare default R15 rig.
-        -- Yields on first call (HTTP fetch); subsequent calls hit the
-        -- internal cache. pcall-wrapped because some executors block
-        -- this API entirely.
-        local char
-        local ok, err = pcall(function()
-            char = Players:CreateHumanoidModelFromUserId(1)
-        end)
-        if not ok or not char then
-            char = buildBlockFallback()
-        end
+        -- Always the hand-built classic-block R15 rig. The CreateHumanoid
+        -- ModelFromUserId path was dropped — its skinned-mesh Head failed
+        -- to render in ViewportFrame on several executors (yubx tested),
+        -- producing a visibly headless preview. User explicit ask: "block
+        -- r15 classic one".
+        local char = buildBlockFallback()
 
         -- Strip everything dynamic so the rig is a static prop in the
         -- viewport — no scripts, no GUIs, no particles, no sounds.
@@ -4372,6 +4432,225 @@ do
 
         local head = char:FindFirstChild("Head")
         return char, cam, hrp, head
+    end
+
+    -- ─── CHAMS for the preview bot ────────────────────────────────────────
+    -- 1:1 mirror of main.lua's chams.lua (the same BoxHandleAdornment /
+    -- CylinderHandleAdornment / WireframeHandleAdornment construction that
+    -- the live in-game chams use). Stays in sync with whatever the user
+    -- has set in the ESP tab — Standard / Glow / Xray / Wireframe modes,
+    -- color, transparency, outline color.
+    --
+    -- Adornments are parented INSIDE the ViewportFrame so they render in
+    -- the same projection context as the bot — global-CoreGui adornments
+    -- (what main.lua uses for live enemies) don't show inside viewports.
+    local CHAMS_PREVIEW_PARTS = {
+        "Head", "UpperTorso", "LowerTorso",
+        "LeftUpperArm", "LeftLowerArm",
+        "RightUpperArm", "RightLowerArm",
+        "LeftUpperLeg", "LeftLowerLeg",
+        "RightUpperLeg", "RightLowerLeg",
+    }
+    local CHAMS_PREVIEW_EDGES = {
+        {1,2},{2,3},{3,4},{4,1},
+        {5,6},{6,7},{7,8},{8,5},
+        {1,5},{2,6},{3,7},{4,8},
+    }
+    local function chamsPreviewCorners(part)
+        local sz = part.Size
+        local hx, hy, hz = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+        return {
+            Vector3.new(-hx, -hy, -hz), Vector3.new( hx, -hy, -hz),
+            Vector3.new( hx, -hy,  hz), Vector3.new(-hx, -hy,  hz),
+            Vector3.new(-hx,  hy, -hz), Vector3.new( hx,  hy, -hz),
+            Vector3.new( hx,  hy,  hz), Vector3.new(-hx,  hy,  hz),
+        }
+    end
+
+    -- Cache of built adornments so we only rebuild on mode change.
+    -- { mode=<string>, color=<Color3>, outline=<Color3>, trans=<n>,
+    --   parts={ {main=adorn, outline=adorn|nil, kind=<string>}, ... } }
+    local chamsPreviewState = nil
+
+    local function clearChamsPreview()
+        if not chamsPreviewState then return end
+        for _, d in chamsPreviewState.parts do
+            if d.main then pcall(d.main.Destroy, d.main) end
+            if d.outline then pcall(d.outline.Destroy, d.outline) end
+        end
+        chamsPreviewState = nil
+    end
+
+    local function buildChamsPreview(char, parent, mode, color, outlineColor, trans)
+        local state = { mode = mode, color = color, outline = outlineColor, trans = trans, parts = {} }
+        for _, name in CHAMS_PREVIEW_PARTS do
+            local part = char:FindFirstChild(name)
+            if not (part and part:IsA("BasePart")) then continue end
+            local isHead = name == "Head"
+            local d = {}
+
+            if mode == "Wireframe" then
+                local w = Instance.new("WireframeHandleAdornment")
+                w.Adornee = part
+                w.AlwaysOnTop = true
+                w.Color3 = color
+                w.Thickness = 1
+                w.ZIndex = 1
+                w.Parent = parent
+                local corners = chamsPreviewCorners(part)
+                local pts = {}
+                for _, e in CHAMS_PREVIEW_EDGES do
+                    pts[#pts+1] = corners[e[1]]
+                    pts[#pts+1] = corners[e[2]]
+                end
+                w:AddLines(pts)
+                d.main = w; d.kind = "wire"
+
+            elseif mode == "Glow" then
+                -- color × 5 RAW (HDR additive) + Transparency = -1 +
+                -- XRayShaded → over-bright bloom. Matches main.lua exactly.
+                local glowOffset = 0.03
+                local boost = Color3.new(color.R * 5, color.G * 5, color.B * 5)
+                local main
+                if isHead then
+                    main = Instance.new("CylinderHandleAdornment")
+                    main.Height = part.Size.Y + glowOffset * 2
+                    main.Radius = part.Size.X * 0.5 + glowOffset
+                    main.CFrame = CFrame.new(Vector3.zero, Vector3.new(0, 1, 0))
+                else
+                    main = Instance.new("BoxHandleAdornment")
+                    main.Size = part.Size + Vector3.new(glowOffset, glowOffset, glowOffset)
+                end
+                main.Adornee = part
+                main.AlwaysOnTop = true
+                main.ZIndex = isHead and 10 or 9
+                main.Color3 = boost
+                main.Transparency = -1
+                pcall(function() main.Shading = Enum.AdornShading.XRayShaded end)
+                main.Parent = parent
+                d.main = main; d.kind = "glow"
+
+            elseif mode == "Xray" then
+                -- Same XRayShaded geometry as Glow, but color clamped to
+                -- [0,1] → flat saturated tint, not bloom.
+                local glowOffset = 0.03
+                local clamped = Color3.new(
+                    math.min(color.R * 5, 1),
+                    math.min(color.G * 5, 1),
+                    math.min(color.B * 5, 1)
+                )
+                local main
+                if isHead then
+                    main = Instance.new("CylinderHandleAdornment")
+                    main.Height = part.Size.Y + glowOffset * 2
+                    main.Radius = part.Size.X * 0.5 + glowOffset
+                    main.CFrame = CFrame.new(Vector3.zero, Vector3.new(0, 1, 0))
+                else
+                    main = Instance.new("BoxHandleAdornment")
+                    main.Size = part.Size + Vector3.new(glowOffset, glowOffset, glowOffset)
+                end
+                main.Adornee = part
+                main.AlwaysOnTop = true
+                main.ZIndex = isHead and 10 or 9
+                main.Color3 = clamped
+                main.Transparency = -1
+                pcall(function() main.Shading = Enum.AdornShading.XRayShaded end)
+                main.Parent = parent
+                d.main = main; d.kind = "xray"
+
+            else
+                -- Standard: box/cylinder for main + slightly larger outline
+                -- adornment behind it. Geometry numbers (0.02 / 0.13 / 0.3 /
+                -- 0.2) pulled directly from main.lua's chams.lua so the
+                -- preview matches what a real enemy looks like.
+                local main, outline
+                if isHead then
+                    main = Instance.new("CylinderHandleAdornment")
+                    main.Height = part.Size.Y + 0.3
+                    main.Radius = part.Size.X * 0.5 + 0.2
+                    main.CFrame = CFrame.new(Vector3.zero, Vector3.new(0, 1, 0))
+
+                    outline = Instance.new("CylinderHandleAdornment")
+                    outline.Height = main.Height + 0.13
+                    outline.Radius = main.Radius + 0.13
+                    outline.CFrame = CFrame.new(Vector3.zero, Vector3.new(0, 1, 0))
+                else
+                    main = Instance.new("BoxHandleAdornment")
+                    main.Size = part.Size + Vector3.new(0.02, 0.02, 0.02)
+
+                    outline = Instance.new("BoxHandleAdornment")
+                    outline.Size = main.Size + Vector3.new(0.13, 0.13, 0.13)
+                end
+                main.Adornee = part
+                main.AlwaysOnTop = true
+                main.ZIndex = 4
+                main.Color3 = color
+                main.Transparency = trans
+                main.Parent = parent
+
+                outline.Adornee = part
+                outline.AlwaysOnTop = true
+                outline.ZIndex = 3
+                outline.Color3 = outlineColor
+                outline.Transparency = 0
+                outline.Parent = parent
+
+                d.main = main; d.outline = outline; d.kind = "std"
+            end
+
+            state.parts[#state.parts + 1] = d
+        end
+        return state
+    end
+
+    -- Called per frame from update(). Reads ESP tab Toggles / Options live
+    -- so any in-menu edit (mode swap, color picker drag, transparency
+    -- slider) reflects on the preview bot immediately.
+    local function updateChamsPreview(char, parent)
+        local enabled = Toggles.ESP and Toggles.ESP.Value
+                    and Toggles.Chams and Toggles.Chams.Value
+        if not enabled or not char or not char.Parent then
+            clearChamsPreview()
+            return
+        end
+        local mode = (Options.ChamsMode and Options.ChamsMode.Value) or "Standard"
+        local color = (Options.ChamsColor and Options.ChamsColor.Value) or Color3.fromRGB(255, 0, 105)
+        local outlineColor = (Options.ChamsOutlineColor and Options.ChamsOutlineColor.Value) or Color3.new(0, 0, 0)
+        local trans = (Options.ChamsTrans and Options.ChamsTrans.Value) or 0
+
+        -- Rebuild on mode change OR char change. Live updates (color /
+        -- transparency / outline) write to existing adornments below.
+        if not chamsPreviewState or chamsPreviewState.mode ~= mode
+            or chamsPreviewState._char ~= char then
+            clearChamsPreview()
+            chamsPreviewState = buildChamsPreview(char, parent, mode, color, outlineColor, trans)
+            chamsPreviewState._char = char
+            return
+        end
+
+        for _, d in chamsPreviewState.parts do
+            if d.kind == "wire" then
+                if d.main then d.main.Color3 = color end
+            elseif d.kind == "glow" then
+                if d.main then
+                    d.main.Color3 = Color3.new(color.R * 5, color.G * 5, color.B * 5)
+                end
+            elseif d.kind == "xray" then
+                if d.main then
+                    d.main.Color3 = Color3.new(
+                        math.min(color.R * 5, 1),
+                        math.min(color.G * 5, 1),
+                        math.min(color.B * 5, 1)
+                    )
+                end
+            else
+                if d.main then
+                    d.main.Color3 = color
+                    if d.main.Transparency ~= trans then d.main.Transparency = trans end
+                end
+                if d.outline then d.outline.Color3 = outlineColor end
+            end
+        end
     end
 
     -- Forward declarations so build() can reference rebuildScene + update
@@ -4660,6 +4939,11 @@ do
         local cy = math.sin(pitch) * dist
         cam.CFrame = CFrame.new(center + Vector3.new(cx, cy, cz), center)
 
+        -- Chams pass — Box/Cylinder/Wireframe HandleAdornments parented
+        -- inside the Viewport. Reads ESP-tab Toggles/Options live so the
+        -- preview always matches what enemies would look like.
+        pcall(updateChamsPreview, char, Viewport)
+
         -- ESP overlay reads SAME Toggles/Options the main ESP loop reads,
         -- so the preview reflects the user's exact configured look. Box
         -- visibility is driven via UIStroke.Enabled on three strokes —
@@ -4670,11 +4954,18 @@ do
         local hbOn   = Toggles.ESPHealthbar and Toggles.ESPHealthbar.Value
 
         -- ─── SCREEN-SPACE BOUNDING BOX OF THE CHARACTER ──────────────────
-        -- Project every part's 8 corners through cam:WorldToViewportPoint
-        -- (which already operates in ViewportFrame pixel coordinates) and
-        -- take the min/max as the on-screen char bounds. This is what
-        -- makes the ESP overlay TRACK the rotating character instead of
-        -- sitting at a fixed centered rectangle.
+        -- Manual perspective projection. cam:WorldToViewportPoint was the
+        -- obvious choice but on multiple executors it returns coords that
+        -- collapse to (0,0) for ViewportFrame cameras — that produced the
+        -- "1x1 box in top-left corner" the user reported. Hand-rolling the
+        -- math against camCF + FOV + Viewport.AbsoluteSize is reliable on
+        -- every executor because it only needs basic CFrame ops.
+        local vpAbs = Viewport.AbsoluteSize
+        local vpw = (vpAbs.X > 1) and vpAbs.X or BoxOverlay._vpw
+        local vph = (vpAbs.Y > 1) and vpAbs.Y or BoxOverlay._vph
+        local camCF = cam.CFrame
+        local tanHalf = math.tan(math.rad(cam.FieldOfView) * 0.5)
+        local aspect = vpw / vph
         local minX, minY = math.huge, math.huge
         local maxX, maxY = -math.huge, -math.huge
         local visible = false
@@ -4684,22 +4975,29 @@ do
                 local sx, sy, sz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
                 for ix = -1, 1, 2 do for iy = -1, 1, 2 do for iz = -1, 1, 2 do
                     local worldPt = (cf * CFrame.new(ix * sx, iy * sy, iz * sz)).Position
-                    local sp, inFront = cam:WorldToViewportPoint(worldPt)
-                    if inFront then
-                        if sp.X < minX then minX = sp.X end
-                        if sp.Y < minY then minY = sp.Y end
-                        if sp.X > maxX then maxX = sp.X end
-                        if sp.Y > maxY then maxY = sp.Y end
+                    local localPos = camCF:PointToObjectSpace(worldPt)
+                    -- Camera looks down its own -Z, so points in front have
+                    -- localPos.Z < 0. Skip points behind / at the plane.
+                    if localPos.Z < -0.05 then
+                        local depth = -localPos.Z
+                        local ndcX = localPos.X / (depth * tanHalf * aspect)
+                        local ndcY = -localPos.Y / (depth * tanHalf)
+                        local px = (ndcX * 0.5 + 0.5) * vpw
+                        local py = (ndcY * 0.5 + 0.5) * vph
+                        if px < minX then minX = px end
+                        if py < minY then minY = py end
+                        if px > maxX then maxX = px end
+                        if py > maxY then maxY = py end
                         visible = true
                     end
                 end end end
             end
         end
         if visible then
-            minX = math.max(0, math.min(BoxOverlay._vpw, minX))
-            maxX = math.max(0, math.min(BoxOverlay._vpw, maxX))
-            minY = math.max(0, math.min(BoxOverlay._vph, minY))
-            maxY = math.max(0, math.min(BoxOverlay._vph, maxY))
+            minX = math.max(0, math.min(vpw, minX))
+            maxX = math.max(0, math.min(vpw, maxX))
+            minY = math.max(0, math.min(vph, minY))
+            maxY = math.max(0, math.min(vph, maxY))
         end
         local boxX, boxY = math.floor(minX), math.floor(minY)
         local boxW, boxH = math.ceil(maxX - minX), math.ceil(maxY - minY)
