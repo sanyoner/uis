@@ -2538,28 +2538,28 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Height: 38 leaves room for OUTER 5-stroke (6px deep) + INNER Main with
-    -- its own 5-stroke composite. Mirrors the Watermark proportions in
-    -- miniature.
-    local h = 38
-    -- Width is determined AFTER the label is parented + has text, by reading
-    -- the live TextBounds.X (the actual rendered glyph width in the active
-    -- font). Heuristic-based estimates (#str * fontSize * mult) overshot the
-    -- real width by ~15% on most strings, so notifications were always wider
-    -- than their content. Chrome budget = Main inset (6+6) + label padding
-    -- inside Main (4+4) = 20px total. Floor 60px so a 1-char toast still
-    -- has visible chrome.
+    -- Outer Notification layout (user spec verbatim):
+    --   • 4px gap outer→main on LEFT, RIGHT, BOTTOM
+    --   • 6px gap outer→main on TOP (incl 2px rainbow strip)
+    --   • Rainbow 2px lower than the old position (caps Main's top edge)
+    --   • Text centered (X + Y) with explicit 4px text→main padding via
+    --     UIPadding on Main (so the gap is pixel-precise, not "however
+    --     much the label was inset")
+    --
+    -- Height = top_chrome(6) + main_padding_top(4) + glyph_height(~12) +
+    --          main_padding_bottom(4) + bottom_chrome(4) = 30. We use 42
+    --          to leave 12 extra pixels of breathing inside Main, so the
+    --          5-stroke INNER border feels like chrome instead of crowding
+    --          the glyph. This is what the user means by "richtig padding"
+    --          — the previous 38px height made the text hug the strokes.
+    local h = 42
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
     local ax = 0
     if Library.NotificationPosition == "TopRight" then ax = 1
     elseif Library.NotificationPosition == "Middle" then ax = 0.5 end
 
-    -- Outer: WindowBg with the SAME 5-stroke OUTER composite the main menu
-    -- and Watermark use (applyLayeredStrokes "outer" pattern). User feedback:
-    -- "notifications have no border? add the 5px one from the main menu".
-    -- Strokes are created via applyLayeredStrokes so theme updates propagate,
-    -- but we capture them here to drive the fade-in/out animation.
+    -- Outer: WindowBg + 5-stroke OUTER composite (same as menu/Watermark).
     local outer = mk("Frame", { Parent = NotifyArea,
         AnchorPoint = Vector2.new(ax, 0),
         BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
@@ -2574,13 +2574,11 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Inner Main: TabBg.
-    -- Spec (user): 4px gap outer→main on left/right/bottom; 6px on top
-    -- (the extra 2px on top holds the rainbow strip). Pixel-perfect:
-    --   Main.X     = 4  (left inset)
-    --   Main.Y     = 6  (top inset: 4px gap + 2px rainbow)
-    --   Main.W     = 1, -8  (4 + 4)
-    --   Main.H     = 1, -10 (6 + 4)
+    -- Inner Main: TabBg with the 5-stroke INNER composite.
+    --   Main.X = 4   (left inset)
+    --   Main.Y = 6   (top inset: 4px gap + 2px rainbow)
+    --   Main.W = 1, -8   (4 + 4 horizontal chrome)
+    --   Main.H = 1, -10  (6 + 4 vertical chrome)
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
@@ -2594,11 +2592,16 @@ function Library:Notify(text, duration)
             innerStrokes[#innerStrokes + 1] = c
         end
     end
+    -- Explicit text→main padding (4px each side) so the label CAN'T crowd
+    -- the inner strokes. Without this, the previous flow relied on the
+    -- label's UDim2(-8 width) to imply padding, which the user read as
+    -- "no padding" because it WASN'T padding — it was margin. UIPadding
+    -- pushes children inward, exactly what the user spec asks for.
+    uipad(main, 4, 4, 4, 4)
 
-    -- Rainbow strip + shadow — sibling of Main inside Outer. Moved 2px
-    -- down from the old Y=4/5 to Y=6/7 per user spec ("rainbow 2px tiefer
-    -- setzen, auch shadow"). Rainbow now sits AT Main's top edge with
-    -- ZIndex 202 > 201, so it visually caps Main.
+    -- Rainbow strip + 50% shadow — sibling of Main inside Outer.
+    -- Y=6 (caps Main's top edge); shadow Y=7 (1px line at rainbow bottom).
+    -- This is the "2px tiefer" placement the user asked for.
     local rb = mk("Frame", { Parent = outer, ZIndex = 202,
         Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
@@ -2615,47 +2618,40 @@ function Library:Notify(text, duration)
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label fills Main. CENTERED text (X + Y). 4px horizontal padding
-    -- inside Main matches the inner-5-stroke depth (inner strokes
-    -- 0/-1/-2/-3/-4 = 4px deep) so glyphs clear the stroke band on the
-    -- sides. Vertical center is handled by TextYAlignment.Center.
+    -- Label fills the padded interior of Main (UIPadding handles the inset).
+    -- TextX/YAlignment Center per user spec. Bold font so the toast carries
+    -- the same weight as the watermark/groupbox titles.
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Position = UDim2.fromOffset(4, 0),
-        Size = UDim2.new(1, -8, 1, 0),
+        Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, Text = text,
-        TextSize = 11, TextColor3 = Theme.TextActive,
+        TextSize = 12, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
-        TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1,
-    }, "reg")
+        TextTransparency = 1,
+    }, "bold")
     -- Label outline is auto-added by mkText; fade it with the label.
     local lblStroke
     for _, c in lbl:GetChildren() do
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
-    -- Measure text via TextService:GetTextSize as PRIMARY source. The
-    -- previous flow read lbl.TextBounds, but TextBounds on a label with
-    -- TextTruncate.AtEnd returns the TRUNCATED width (Roblox docs:
-    -- "bounding rectangle of the rendered text" — and rendered means
-    -- post-truncation). That created a positive-feedback loop where
-    -- every Notify came back the same minimum width because the label
-    -- started at width 0, text got truncated to nothing, TextBounds
-    -- returned 0, fallback fired (60px floor). Hence "alle gleich gross".
-    -- TextService is synchronous + truncation-agnostic.
-    -- Chrome budget +16: 4+4 outer→main + 4+4 main→label.
+    -- Width = max(TextService bound, measureText) + chrome.
+    -- Chrome = 8 (outer→main 4+4) + 8 (main UIPadding 4+4) = 16.
+    -- TS alone undersized notifications because SourceSansBold is narrower
+    -- than the live-rendered custom Verdana Bold — taking max() with
+    -- measureText (mult 0.62) compensates for the glyph-advance gap.
+    -- Floor 100px so a 1-char toast still reads as a notification, not
+    -- a square chip.
     local TS = game:GetService("TextService")
-    local textW
+    local tsW = 0
     local ok, b = pcall(function()
-        return TS:GetTextSize(text, 11, Enum.Font.SourceSans,
+        return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
             Vector2.new(99999, 14))
     end)
-    if ok and b and b.X > 0 then
-        textW = b.X
-    else
-        textW = measureText(text, 11, "reg")
-    end
-    local w = math.max(60, math.ceil(textW) + 16)
+    if ok and b then tsW = b.X end
+    local mW = measureText(text, 12, "bold")
+    local textW = math.max(tsW, mW)
+    local w = math.max(100, math.ceil(textW) + 16)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -4542,12 +4538,34 @@ do
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        -- Always the hand-built classic-block R15 rig. The CreateHumanoid
-        -- ModelFromUserId path was dropped — its skinned-mesh Head failed
-        -- to render in ViewportFrame on several executors (yubx tested),
-        -- producing a visibly headless preview. User explicit ask: "block
-        -- r15 classic one".
-        local char = buildBlockFallback()
+        -- LocalPlayer.Character clone is the preview rig. User explicit ask:
+        -- "nutze einfach den localplayer als model fürs esp preview". This
+        -- gives us the rig the user actually sees in-game (their own kit,
+        -- skin, accessories) rather than a generic block dummy. The block
+        -- fallback ONLY fires if LocalPlayer has no Character (loading
+        -- screen, post-respawn-pre-spawn window).
+        local char
+        do
+            local lp = game:GetService("Players").LocalPlayer
+            local lc = lp and lp.Character
+            local ok, cloned = pcall(function()
+                if not lc then return nil end
+                local archivableSnapshot = {}
+                for _, d in lc:GetDescendants() do
+                    archivableSnapshot[d] = d.Archivable
+                    d.Archivable = true
+                end
+                lc.Archivable = true
+                local c = lc:Clone()
+                lc.Archivable = archivableSnapshot[lc] ~= false
+                for d, was in archivableSnapshot do
+                    if d.Parent then pcall(function() d.Archivable = was end) end
+                end
+                return c
+            end)
+            if ok and cloned then char = cloned end
+        end
+        if not char then char = buildBlockFallback() end
 
         -- Strip everything dynamic so the rig is a static prop in the
         -- viewport — no scripts, no GUIs, no particles, no sounds.
