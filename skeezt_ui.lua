@@ -4490,15 +4490,22 @@ do
     -- nothing tints the meshes back.
     local GREY = Color3.fromRGB(163, 163, 163)
 
-    local function buildBlockFallback()
-        -- Block R15 fallback — used only when CreateHumanoidModelFrom
-        -- Description fails. Single-color grey + a Humanoid (so the
-        -- buildSceneInto pipeline's PlatformStand/AutoRotate=false
-        -- writes don't error).
+    -- Block R15 dummy with SpecialMesh shapes (sphere head + cylinder limbs)
+    -- to round off the silhouette without touching Players:CreateHumanoid
+    -- ModelFromDescription. The Description path was tried but on yubx it
+    -- auto-parents the returned character to workspace as a side effect —
+    -- the bot appeared "unter der map" while the ViewportFrame stayed empty,
+    -- and main.lua's chams system happily adorned the workspace-resident
+    -- parts (user-reported: "chams doesnt go on the esp preview but it
+    -- goes on the created character under the map"). This path NEVER
+    -- touches workspace: Model is created with Parent=nil, all parts go
+    -- inside the Model, the Model is parented only to the ViewportFrame
+    -- by buildSceneInto. Zero workspace exposure, zero chams leak.
+    local function buildR15WithMeshes()
         local m = Instance.new("Model")
         m.Name = "PreviewRig"
 
-        local function part(name, size, pos)
+        local function part(name, size, pos, meshType, meshScale)
             local p = Instance.new("Part")
             p.Name = name; p.Size = size; p.Position = pos
             p.Color = GREY; p.Material = Enum.Material.SmoothPlastic
@@ -4506,29 +4513,63 @@ do
             p.CanTouch = false; p.Massless = true
             p.TopSurface = Enum.SurfaceType.Smooth
             p.BottomSurface = Enum.SurfaceType.Smooth
+            -- Mesh override — Sphere for Head, Cylinder for limbs/torso
+            -- gives the rig a rounded R15 silhouette while leaving Size
+            -- (chams adornment uses Size, not visual mesh) untouched, so
+            -- the chams box still hugs the body part correctly.
+            if meshType then
+                local mesh = Instance.new("SpecialMesh")
+                mesh.MeshType = meshType
+                if meshScale then mesh.Scale = meshScale end
+                mesh.Parent = p
+            end
             p.Parent = m
             return p
         end
 
-        -- Standard R15 Block dimensions (Studio Rig Builder spec).
+        -- Standard R15 Block dimensions (Studio Rig Builder spec). HRP
+        -- stays a pure block (transparent anyway). Head = sphere mesh.
+        -- Limbs + torso = cylinder mesh to round off the corners.
         local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
             Vector3.new(0, 3, 0))
         hrp.Transparency = 1
 
-        part("LowerTorso",    Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0))
-        part("UpperTorso",    Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0))
-        part("Head",          Vector3.new(2, 1,     1), Vector3.new(0, 5.35,   0))
-        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0))
-        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0))
+        -- Torso = two cylinder meshes stacked. Mesh.Scale (0.5,1,0.5)
+        -- inscribes the cylinder inside the part's 2×Y×1 AABB so it
+        -- doesn't bulge past the visible bounding box.
+        part("LowerTorso",    Vector3.new(2, 0.775, 1), Vector3.new(0, 3.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("UpperTorso",    Vector3.new(2, 1.225, 1), Vector3.new(0, 4.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+
+        -- Head = sphere. Scale (0.55, 1, 0.55) makes it round but not as
+        -- wide as the body (matches Roblox default R15 head proportions).
+        part("Head",          Vector3.new(2, 1,     1), Vector3.new(0, 5.35,   0),
+            Enum.MeshType.Sphere, Vector3.new(0.55, 1, 0.55))
+
+        -- Arms — cylinder meshes for the upper/lower segments. Hands stay
+        -- short blocks (real R15 hands aren't cylindrical anyway).
+        part("LeftUpperArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 4.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("LeftLowerArm",  Vector3.new(1, 1.225, 1), Vector3.new(-1.5, 3.0125, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
         part("LeftHand",      Vector3.new(1, 0.4,   1), Vector3.new(-1.5, 2.2,    0))
-        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0))
-        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0))
+        part("RightUpperArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 4.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("RightLowerArm", Vector3.new(1, 1.225, 1), Vector3.new( 1.5, 3.0125, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
         part("RightHand",     Vector3.new(1, 0.4,   1), Vector3.new( 1.5, 2.2,    0))
-        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0))
-        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0))
+
+        -- Legs — cylinder meshes for upper/lower segments. Feet stay block.
+        part("LeftUpperLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 2.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("LeftLowerLeg",  Vector3.new(1, 1.225, 1), Vector3.new(-0.5, 1.0125, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
         part("LeftFoot",      Vector3.new(1, 0.4,   1), Vector3.new(-0.5, 0.2,    0))
-        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0))
-        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0))
+        part("RightUpperLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 2.2375, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
+        part("RightLowerLeg", Vector3.new(1, 1.225, 1), Vector3.new( 0.5, 1.0125, 0),
+            Enum.MeshType.Cylinder, Vector3.new(1, 1, 1))
         part("RightFoot",     Vector3.new(1, 0.4,   1), Vector3.new( 0.5, 0.2,    0))
 
         m.PrimaryPart = hrp
@@ -4545,36 +4586,8 @@ do
         return m
     end
 
-    local function buildR15WithMeshes()
-        -- Empty HumanoidDescription = default R15 rig with engine-bundled
-        -- MeshParts. This is the "echte r15 meshes" path — Head is a
-        -- proper sphere MeshPart, limbs/torso are properly-curved meshes,
-        -- and a Humanoid is attached automatically. The character has no
-        -- accessories / clothing / shirt / pants because the desc is
-        -- empty, so the post-strip pass below just recolors meshes grey.
-        local desc = Instance.new("HumanoidDescription")
-        local ok, char = pcall(function()
-            return Players:CreateHumanoidModelFromDescription(desc,
-                Enum.HumanoidRigType.R15)
-        end)
-        if not ok or not char then
-            return buildBlockFallback()
-        end
-
-        -- Recolor every BasePart grey + strip any tinting structures
-        -- that CreateHumanoidModelFromDescription may leave behind
-        -- (BodyColors instance, Shirt, Pants, ShirtGraphic).
-        for _, d in char:GetDescendants() do
-            if d:IsA("BasePart") then
-                pcall(function() d.Color = GREY end)
-            elseif d:IsA("BodyColors") or d:IsA("Shirt")
-                or d:IsA("Pants") or d:IsA("ShirtGraphic")
-                or d:IsA("Accessory") then
-                pcall(d.Destroy, d)
-            end
-        end
-        return char
-    end
+    -- Block fallback alias — older code paths still reference this name.
+    local buildBlockFallback = buildR15WithMeshes
 
     -- Pose Roblox-default T-pose into a relaxed idle: arms hang ~85deg down.
     -- Motor6D C0 changes DO propagate through ViewportFrame rendering — the
