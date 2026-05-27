@@ -733,6 +733,16 @@ local function attachWidgets(target, body)
         local values = opt.Values or {}
         local multi = opt.Multi == true
 
+        -- sanyui convention: numeric Default on a SINGLE-select dropdown is
+        -- a 1-based INDEX into Values, not a literal value. main.lua uses this
+        -- pattern heavily (`Default = 1` ≈ "first item, whatever it is"). For
+        -- MULTI-select, Default is always an array of value-strings, so leave
+        -- it untouched. Resolve at construction so the rest of the dropdown
+        -- code compares by string equality like it expects.
+        if not multi and type(opt.Default) == "number" and values[opt.Default] ~= nil then
+            opt.Default = values[opt.Default]
+        end
+
         local hasLabel = opt.Text ~= nil
         local row = mk("Frame", { Parent = body,
             Size = UDim2.new(1, 0, 0, hasLabel and 28 or 16),
