@@ -212,7 +212,7 @@ end
 local function mk(class, props)
     local inst = Instance.new(class)
     inst.Name = "\0"
-    if props then for k, v in pairs(props) do pcall(function() inst[k] = v end) end end
+    if props then for k, v in props do pcall(function() inst[k] = v end) end end
     return inst
 end
 
@@ -264,7 +264,7 @@ local function applyLayeredStrokes(host, kind)
             { off = -4, t = 1, c = Theme.BorderDark },
         }
     end
-    for _, s in ipairs(set) do
+    for _, s in set do
         local st = Instance.new("UIStroke"); st.Name = "\0"
         st.Color = s.c
         st.Thickness = s.t
@@ -348,7 +348,7 @@ local function withOnChanged(widget)
     widget.SetValue = function(self, v, supp, ...)
         origSetValue(self, v, supp, ...)
         if not supp then
-            for _, cb in ipairs(self._listeners) do pcall(cb, self.Value) end
+            for _, cb in self._listeners do pcall(cb, self.Value) end
         end
     end
     -- ColorPicker exposes a second setter for the SaveManager (RGB + alpha).
@@ -358,7 +358,7 @@ local function withOnChanged(widget)
         widget.SetValueRGB = function(self, c, t, supp)
             origRGB(self, c, t)
             if not supp then
-                for _, cb in ipairs(self._listeners) do pcall(cb, self.Value) end
+                for _, cb in self._listeners do pcall(cb, self.Value) end
             end
         end
     end
@@ -426,7 +426,7 @@ Library.ScreenGui = ScreenGui
 local function track(c) Library.Connections[#Library.Connections + 1] = c; return c end
 
 local function notifyDepChange()
-    for _, fn in ipairs(Library.DepRefreshers) do pcall(fn) end
+    for _, fn in Library.DepRefreshers do pcall(fn) end
 end
 
 local function closeActivePopup()
@@ -492,7 +492,7 @@ local function attachWidgets(target, body)
                 "  <font color=\"#dd4444\">*</font>"
         end
 
-        local toggle = { Value = opt.Default and true or false, Callback = opt.Callback }
+        local toggle = { Type = "Toggle", Value = opt.Default and true or false, Callback = opt.Callback }
 
         local function setGrad(hov)
             local a, b = Theme.ChkTop, Theme.ChkBottom
@@ -677,7 +677,7 @@ local function attachWidgets(target, body)
             ZIndex = 2,
         }, "bold")
 
-        local slider = { Value = val, Callback = opt.Callback,
+        local slider = { Type = "Slider", Value = val, Callback = opt.Callback,
                          Min = minV, Max = maxV, Rounding = rd }
         local function fmt(v)
             if rd <= 0 then return tostring(math.floor(v + 0.5)) end
@@ -786,12 +786,12 @@ local function attachWidgets(target, body)
         track(mainBtn.MouseEnter:Connect(function() mainBtn.BackgroundColor3 = DD_FLAT_HOV end))
         track(mainBtn.MouseLeave:Connect(function() mainBtn.BackgroundColor3 = DD_FLAT end))
 
-        local dd = { Value = multi and {} or opt.Default, Callback = opt.Callback,
-                     Values = values, Multi = multi }
+        local dd = { Type = "Dropdown", Value = multi and {} or opt.Default,
+                     Callback = opt.Callback, Values = values, Multi = multi }
         local function fmtV()
             if multi then
                 local sel = {}
-                for k in pairs(dd.Value) do sel[#sel + 1] = tostring(k) end
+                for k in dd.Value do sel[#sel + 1] = tostring(k) end
                 if #sel == 0 then return "None" end
                 if #sel <= 3 then return table.concat(sel, ", ") end
                 return tostring(#sel) .. " selected"
@@ -803,7 +803,7 @@ local function attachWidgets(target, body)
         function dd:SetValue(v, supp)
             if multi then
                 local t = {}
-                if type(v) == "table" then for _, k in pairs(v) do t[k] = true end end
+                if type(v) == "table" then for _, k in v do t[k] = true end end
                 self.Value = t
             else self.Value = v end
             refresh()
@@ -845,7 +845,7 @@ local function attachWidgets(target, body)
                 item.TextColor3 = Theme.TextDim
             end
         end
-        local function refreshRows() for v, r in pairs(rows) do applyRowVisual(v, r) end end
+        local function refreshRows() for v, r in rows do applyRowVisual(v, r) end end
 
         -- Row builder extracted so :SetValues can rebuild dynamically (used by
         -- SaveManager to refresh the config-list dropdown after Save/Delete).
@@ -880,18 +880,18 @@ local function attachWidgets(target, body)
                 refreshRows()
             end))
         end
-        for _, v in ipairs(values) do addRow(v) end
+        for _, v in values do addRow(v) end
         refreshRows()
 
         -- SaveManager parity: replaces the dropdown's value list at runtime
         -- (config-list rebuilds after Create/Delete) and clears the current
         -- selection so the caller can drive a fresh pick via SetValue.
         function dd:SetValues(newValues)
-            for _, item in pairs(rows) do pcall(function() item:Destroy() end) end
-            for k in pairs(rows) do rows[k] = nil end
+            for _, item in rows do pcall(function() item:Destroy() end) end
+            for k in rows do rows[k] = nil end
             values = newValues or {}
             self.Values = values
-            for _, v in ipairs(values) do addRow(v) end
+            for _, v in values do addRow(v) end
             refreshRows()
         end
 
@@ -953,7 +953,8 @@ local function attachWidgets(target, body)
         end
         inkBorder(chip)
 
-        local cp = { Value = default, Transparency = opt.Transparency or 0,
+        local cp = { Type = "ColorPicker", Value = default,
+                     Transparency = opt.Transparency or 0,
                      Callback = opt.Callback, _h = h, _s = s, _v = v }
 
         local popup = mk("Frame", { Parent = ScreenGui,
@@ -1137,7 +1138,7 @@ local function attachWidgets(target, body)
             modesList = { "Toggle" }
         end
 
-        local kp = { Value = defaultKey, Mode = defaultMode,
+        local kp = { Type = "KeyPicker", Value = defaultKey, Mode = defaultMode,
                      Callback = opt.Callback, _toggleState = false,
                      _parentToggle = parentToggle }
 
@@ -1287,7 +1288,7 @@ local function attachWidgets(target, body)
 
         local modeRows = {}
         local function refreshModeRows()
-            for m, r in pairs(modeRows) do
+            for m, r in modeRows do
                 if m == kp.Mode then
                     r.TextColor3 = Theme.Accent
                     applyFont(r, "bold")
@@ -1297,7 +1298,7 @@ local function attachWidgets(target, body)
                 end
             end
         end
-        for _, m in ipairs(modesList) do
+        for _, m in modesList do
             local row = mkText("TextButton", { Parent = modeInner,
                 Size = UDim2.new(1, 0, 0, 12),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -1399,7 +1400,7 @@ local function attachWidgets(target, body)
         pad.PaddingLeft = UDim.new(0, 5); pad.PaddingRight = UDim.new(0, 5)
         pad.Parent = field
 
-        local input = { Value = opt.Default or "", Callback = opt.Callback }
+        local input = { Type = "Input", Value = opt.Default or "", Callback = opt.Callback }
 
         function input:SetValue(v, supp)
             self.Value = tostring(v or "")
@@ -1433,7 +1434,7 @@ local function attachWidgets(target, body)
         function depBox:SetupDependencies(deps)
             local function refresh()
                 local show = true
-                for _, d in ipairs(deps) do
+                for _, d in deps do
                     local tog, expected = d[1], d[2]
                     if tog and tog.Value ~= expected then show = false; break end
                 end
@@ -1669,7 +1670,7 @@ function Library:CreateWindow(opts)
             tabs[#tabs + 1] = sub
 
             track(btn.MouseButton1Click:Connect(function()
-                for _, t in ipairs(tabs) do
+                for _, t in tabs do
                     local active = (t == sub)
                     t._body.Visible = active
                     t._btn.TextColor3 = active and Theme.TextActive or Theme.TextDim
@@ -1714,6 +1715,12 @@ function Library:CreateWindow(opts)
             Size = UDim2.fromScale(1, 1),
             BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false })
 
+        -- ClipsDescendants=true on the columns is what makes the ScrollingFrame
+        -- actually clip overflow at its visible bounds + lets the scrollbar
+        -- thumb track properly. With it false (old default) a groupbox taller
+        -- than the column rendered OUTSIDE the menu window — the "groupbox
+        -- clips out of the main menu" bug. 6px top UIPadding (added below) keeps
+        -- the groupbox title chip (Y=-2 inside its wrap) safe from clipping.
         local leftCol = mk("ScrollingFrame", { Parent = tabContent,
             Size = UDim2.new(0.5, -6, 1, 0), Position = UDim2.fromOffset(0, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -1721,7 +1728,7 @@ function Library:CreateWindow(opts)
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollingDirection = Enum.ScrollingDirection.Y,
-            ClipsDescendants = false })
+            ClipsDescendants = true })
         local rightCol = mk("ScrollingFrame", { Parent = tabContent,
             Size = UDim2.new(0.5, -6, 1, 0),
             Position = UDim2.new(0.5, 6, 0, 0),
@@ -1730,7 +1737,7 @@ function Library:CreateWindow(opts)
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollingDirection = Enum.ScrollingDirection.Y,
-            ClipsDescendants = false })
+            ClipsDescendants = true })
         listLayout(leftCol,  Enum.FillDirection.Vertical, 12)
         listLayout(rightCol, Enum.FillDirection.Vertical, 12)
         uipad(leftCol, 6, 6, 6, 4)
@@ -1757,7 +1764,7 @@ function Library:CreateWindow(opts)
     end
 
     function self:SelectTab(tab)
-        for _, t in ipairs(self._tabs) do
+        for _, t in self._tabs do
             local active = (t == tab)
             t._content.Visible = active
             t._btn.TextColor3 = active and Theme.TextActive or Theme.TextDim
@@ -1818,7 +1825,7 @@ function Library:Unload()
     if type(self.OnUnloadCallback) == "function" then
         pcall(self.OnUnloadCallback)
     end
-    for _, c in ipairs(self.Connections) do pcall(function() c:Disconnect() end) end
+    for _, c in self.Connections do pcall(function() c:Disconnect() end) end
     pcall(function() ScreenGui:Destroy() end)
 end
 
@@ -1866,12 +1873,12 @@ local function dispatchFontChange()
     -- (ESP billboards, watermark) gets the change via the listener fanout.
     local f = Library:GetActiveFont()
     if not f then return end
-    for _, d in pairs(ScreenGui:GetDescendants()) do
+    for _, d in ScreenGui:GetDescendants() do
         if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
             pcall(function() d.FontFace = f end)
         end
     end
-    for _, cb in ipairs(Library.FontListeners) do pcall(cb, f) end
+    for _, cb in Library.FontListeners do pcall(cb, f) end
 end
 
 -- Register a single font (TTF URL or local path) under a chosen name.
@@ -1888,7 +1895,7 @@ end
 -- Bulk-load. `list` is an array of font names that exist as <baseUrl>/<name>.ttf
 -- (matches sanyoner/Nachtara/fonts repo structure exactly).
 function Library:RegisterFontsFromRepo(baseUrl, list)
-    for _, name in ipairs(list) do
+    for _, name in list do
         -- name like "Verdana-Font" or "Light Modern" — URL-encode the space.
         local encoded = string.gsub(name, " ", "%%20")
         self:RegisterFont(name, baseUrl .. encoded .. ".ttf")
@@ -1946,7 +1953,7 @@ function Library:SetNotificationPosition(pos)
     end
     -- Re-anchor any currently-live notifications so they don't drift away
     -- from the new alignment.
-    for _, child in ipairs(NotifyArea:GetChildren()) do
+    for _, child in NotifyArea:GetChildren() do
         if child:IsA("Frame") then
             local ax = 0
             if pos == "TopRight" then ax = 1
@@ -1984,7 +1991,7 @@ function Library:Notify(text, duration)
             { off = -5, t = 1, c = Theme.BorderHi   },
             { off = -6, t = 1, c = Theme.BorderDark },
         }
-        for _, s in ipairs(set) do
+        for _, s in set do
             local st = Instance.new("UIStroke"); st.Name = "\0"
             st.Color = s.c; st.Thickness = s.t; st.Transparency = 1
             st.LineJoinMode = Enum.LineJoinMode.Miter
@@ -2010,7 +2017,7 @@ function Library:Notify(text, duration)
             { off = -3, t = 1, c = Theme.BorderHi   },
             { off = -4, t = 1, c = Theme.BorderDark },
         }
-        for _, s in ipairs(set) do
+        for _, s in set do
             local st = Instance.new("UIStroke"); st.Name = "\0"
             st.Color = s.c; st.Thickness = s.t; st.Transparency = 1
             st.LineJoinMode = Enum.LineJoinMode.Miter
@@ -2050,7 +2057,7 @@ function Library:Notify(text, duration)
     }, "reg")
     -- Label outline is auto-added by mkText; fade it with the label.
     local lblStroke
-    for _, c in ipairs(lbl:GetChildren()) do
+    for _, c in lbl:GetChildren() do
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
@@ -2071,10 +2078,10 @@ function Library:Notify(text, duration)
     -- Phase 1: width-grow + fade in
     pcall(outer.TweenSize, outer, UDim2.fromOffset(w, h),
         Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.35, true)
-    for _, st in ipairs(outerStrokes) do
+    for _, st in outerStrokes do
         TweenService:Create(st, TI_IN, { Transparency = 0 }):Play()
     end
-    for _, st in ipairs(innerStrokes) do
+    for _, st in innerStrokes do
         TweenService:Create(st, TI_IN, { Transparency = 0 }):Play()
     end
     TweenService:Create(outer,    TI_IN, { BackgroundTransparency = 0 }):Play()
@@ -2100,10 +2107,10 @@ function Library:Notify(text, duration)
         -- Phase 3: fade out + width-shrink
         pcall(outer.TweenSize, outer, UDim2.fromOffset(0, h),
             Enum.EasingDirection.In, Enum.EasingStyle.Quad, 0.5, true)
-        for _, st in ipairs(outerStrokes) do
+        for _, st in outerStrokes do
             TweenService:Create(st, TI_OUT, { Transparency = 1 }):Play()
         end
-        for _, st in ipairs(innerStrokes) do
+        for _, st in innerStrokes do
             TweenService:Create(st, TI_OUT, { Transparency = 1 }):Play()
         end
         TweenService:Create(outer,    TI_OUT, { BackgroundTransparency = 1 }):Play()
@@ -2372,7 +2379,7 @@ function Library:ShowLoader(config)
         })
         local layout = listLayout(scroll, Enum.FillDirection.Vertical, 8)
 
-        for i, note in ipairs(config.Patchnotes) do
+        for i, note in config.Patchnotes do
             local changes = note.Changes or note.changes or {}
             local version = tostring(note.Version or note.version or "v?")
             local date    = tostring(note.Date    or note.date    or "")
@@ -2395,7 +2402,7 @@ function Library:ShowLoader(config)
                 TextXAlignment = Enum.TextXAlignment.Right,
             }, "reg")
             local y = 15
-            for _, change in ipairs(changes) do
+            for _, change in changes do
                 mkText("TextLabel", { Parent = entry, ZIndex = 256,
                     Position = UDim2.fromOffset(0, y),
                     Size = UDim2.new(1, 0, 0, 12),
@@ -2456,9 +2463,9 @@ function Library:ShowLoader(config)
         }
         local stageTime = config.LoadTime / #stages
         local fillWidth = progOuter.AbsoluteSize.X - 2
-        if fillWidth < 1 then fillWidth = PanelW - 30 end
+        if fillWidth < 1 then fillWidth = L - 30 end
 
-        for _, st in ipairs(stages) do
+        for _, st in stages do
             statusLbl.Text = tostring(st[2] or "")
             pcall(function()
                 TweenService:Create(progFill,
@@ -2472,7 +2479,7 @@ function Library:ShowLoader(config)
 
         -- Fade loader out
         pcall(function()
-            for _, d in ipairs(loader:GetDescendants()) do
+            for _, d in loader:GetDescendants() do
                 if d:IsA("Frame") or d:IsA("TextButton") or d:IsA("ScrollingFrame") then
                     if d.BackgroundTransparency < 1 then
                         pcall(function()
@@ -2527,7 +2534,7 @@ function Library:ShowLoader(config)
                 TextYAlignment = Enum.TextYAlignment.Center,
             }, "bold")
             local stroke
-            for _, c in ipairs(l:GetChildren()) do
+            for _, c in l:GetChildren() do
                 if c:IsA("UIStroke") then stroke = c; stroke.Transparency = 1; break end
             end
             return l, stroke
@@ -2542,7 +2549,7 @@ function Library:ShowLoader(config)
             TweenService:Create(tint, introInfo, { BackgroundTransparency = 0.55 }):Play()
             if blur then TweenService:Create(blur, introInfo, { Size = 20 }):Play() end
             local labels = { {l1, s1, 0}, {l2, s2, 0.08}, {l3, s3, 0.16} }
-            for _, e in ipairs(labels) do
+            for _, e in labels do
                 task.delay(e[3], function()
                     pcall(function()
                         TweenService:Create(e[1], introInfo, { TextTransparency = 0 }):Play()
@@ -2556,12 +2563,12 @@ function Library:ShowLoader(config)
         task.wait(0.9 + (tonumber(config.IntroDuration) or 1.2))
 
         pcall(function()
-            for _, l in ipairs({ l1, l2, l3 }) do
+            for _, l in { l1, l2, l3 } do
                 pcall(function()
                     TweenService:Create(l, introInfo, { TextTransparency = 1 }):Play()
                 end)
             end
-            for _, s in ipairs({ s1, s2, s3 }) do
+            for _, s in { s1, s2, s3 } do
                 if s then
                     pcall(function()
                         TweenService:Create(s, introInfo, { Transparency = 1 }):Play()
@@ -2674,7 +2681,7 @@ function Library:BuildFontSection(container)
     -- Snapshot what's loaded now + always include "Default" as a sentinel
     -- that reverts to FONT_REG.
     local names = { "Default" }
-    for n in pairs(self.Fonts or {}) do names[#names + 1] = n end
+    for n in self.Fonts or {} do names[#names + 1] = n end
     table.sort(names, function(a, b)
         if a == "Default" then return true end
         if b == "Default" then return false end
@@ -2701,12 +2708,12 @@ function Library:BuildFontSection(container)
     -- is the simplest catch-all without instrumenting the loader.
     local lastCount = #names
     track(RunService.Heartbeat:Connect(function()
-        local n = 0; for _ in pairs(self.Fonts or {}) do n = n + 1 end
+        local n = 0; for _ in self.Fonts or {} do n = n + 1 end
         n = n + 1   -- "Default"
         if n ~= lastCount and Library.Options.LibraryFont then
             lastCount = n
             local updated = { "Default" }
-            for k in pairs(self.Fonts or {}) do updated[#updated + 1] = k end
+            for k in self.Fonts or {} do updated[#updated + 1] = k end
             table.sort(updated, function(a, b)
                 if a == "Default" then return true end
                 if b == "Default" then return false end
@@ -2834,7 +2841,7 @@ function Library:CreatePlaceholderBox(config)
         function handle:SetText(t) if lbl and lbl.Parent then lbl.Text = tostring(t or "") end end
         function handle:SetColor(c) if lbl and lbl.Parent then lbl.TextColor3 = c end end
         function handle:Remove()
-            for i, l in ipairs(labels) do
+            for i, l in labels do
                 if l == lbl then table.remove(labels, i); break end
             end
             pcall(function() lbl:Destroy() end)
@@ -2844,7 +2851,7 @@ function Library:CreatePlaceholderBox(config)
     end
 
     function box:Clear()
-        for _, lbl in ipairs(labels) do pcall(function() lbl:Destroy() end) end
+        for _, lbl in labels do pcall(function() lbl:Destroy() end) end
         for i = #labels, 1, -1 do labels[i] = nil end
         refreshVisibility()
     end
@@ -2878,5 +2885,1225 @@ function Library:SetWatermark(text)
     end
 end
 function Library:SetWatermarkVisibility(b) Watermark.Visible = b and true or false end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- INTEGRATED SUBSYSTEMS — SaveManager / ThemeManager / ESPPreview / Watermark
+--
+-- These four subsystems used to ship as separate addons fetched from github
+-- (sanyoner/Nachtara/addons/{SaveManager,ThemeManager,ESPPreview}.lua). They
+-- now live in the library so main.lua doesn't need separate fetch() calls —
+-- access them via Library.SaveManager, Library.ThemeManager, etc.
+--
+-- Compatibility: the public APIs match the standalone addons 1:1 so existing
+-- main.lua can simply assign `local SaveManager = Library.SaveManager` etc.
+-- in place of the previous fetch() calls and keep working.
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- Library color aliases consumed by the integrated theme + preview systems.
+-- These mirror specific Theme.* fields under the field names the old addons
+-- expect (BackgroundColor / MainColor / AccentColor / OutlineColor / FontColor).
+-- Writes to these go through Library:ApplyThemeColor below.
+Library.AccentColor     = Theme.Accent
+Library.AccentColorDark = (function()
+    local h, s, v = Color3.toHSV(Theme.Accent)
+    return Color3.fromHSV(h, s, math.max(0, v - 0.2))
+end)()
+Library.BackgroundColor = Theme.WindowBg
+Library.MainColor       = Theme.TabBg
+Library.OutlineColor    = Theme.BorderHi
+Library.FontColor       = Theme.Text
+
+function Library:GetDarkerColor(c)
+    if typeof(c) ~= "Color3" then return c end
+    local h, s, v = Color3.toHSV(c)
+    return Color3.fromHSV(h, s, math.max(0, v - 0.2))
+end
+
+-- TextService wrapper that always uses the active custom font when measuring.
+-- The integrated ESP preview uses this to size its label area to whatever
+-- font the user picked via Library:SetFont — same code path as in-game
+-- notifications.
+function Library:GetTextBounds(text, font, size, frame)
+    if not text or text == "" then return 0, 0 end
+    font = font or self:GetActiveFont()
+    frame = frame or Vector2.new(math.huge, math.huge)
+    local TS = game:GetService("TextService")
+    -- Prefer modern Font-aware overload; fall back to legacy Enum.Font path
+    -- on executors whose TextService doesn't accept a Font instance.
+    local ok, b = pcall(function()
+        return TS:GetTextSize(text, size, font and Enum.Font.Code or Enum.Font.Code, frame)
+    end)
+    if ok and b then return b.X, b.Y end
+    return #text * size * 0.6, size + 2
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- SaveManager — config persistence with XOR + base64 obfuscation on disk.
+-- Each saved config is one opaque alphanumeric blob (`.nch`). Casual inspection
+-- of the file reveals nothing about toggle names / slider values / keybinds.
+-- ══════════════════════════════════════════════════════════════════════════
+do
+    local HttpService = game:GetService("HttpService")
+    local CIPHER_KEY  = "nachtara_cfg_4f8c2a9e1d7b3f65_sanyui_v1"
+    local b64c        = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    local function b64enc(d)
+        return ((d:gsub('.', function(x)
+            local r, b = '', x:byte()
+            for i = 8, 1, -1 do r = r .. (b % 2^i - b % 2^(i-1) > 0 and '1' or '0') end
+            return r
+        end) .. '0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
+            if #x < 6 then return '' end
+            local c = 0
+            for i = 1, 6 do c = c + (x:sub(i, i) == '1' and 2^(6-i) or 0) end
+            return b64c:sub(c + 1, c + 1)
+        end) .. ({ '', '==', '=' })[#d % 3 + 1])
+    end
+
+    local function b64dec(d)
+        d = string.gsub(d, '[^' .. b64c .. '=]', '')
+        return (d:gsub('.', function(x)
+            if x == '=' then return '' end
+            local r, f = '', (b64c:find(x) - 1)
+            for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0') end
+            return r
+        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+            if #x ~= 8 then return '' end
+            local c = 0
+            for i = 1, 8 do c = c + (x:sub(i, i) == '1' and 2^(8-i) or 0) end
+            return string.char(c)
+        end))
+    end
+
+    local function xorBytes(data, key)
+        local out, klen = table.create(#data), #key
+        for i = 1, #data do
+            out[i] = string.char(bit32.bxor(data:byte(i), key:byte(((i - 1) % klen) + 1)))
+        end
+        return table.concat(out)
+    end
+
+    local function encrypt(plaintext)  return b64enc(xorBytes(plaintext, CIPHER_KEY)) end
+    local function decrypt(ciphertext) return xorBytes(b64dec(ciphertext:gsub('%s+', '')), CIPHER_KEY) end
+
+    local SaveManager = {
+        Folder        = "sanyui",
+        Ignore        = {},
+        PreSaveHooks  = {},
+        PostLoadHooks = {},
+        Library       = Library,
+    }
+
+    -- Per-widget save/load adapters. Save returns a serializable table, Load
+    -- restores from one. Dispatched off widget.Type — see Type fields added
+    -- at widget construction.
+    SaveManager.Parser = {
+        Toggle = {
+            Save = function(idx, o) return { type = "Toggle", idx = idx, value = o.Value } end,
+            Load = function(idx, d)
+                if Library.Toggles[idx] then Library.Toggles[idx]:SetValue(d.value) end
+            end,
+        },
+        Slider = {
+            Save = function(idx, o) return { type = "Slider", idx = idx, value = tostring(o.Value) } end,
+            Load = function(idx, d)
+                if Library.Options[idx] then Library.Options[idx]:SetValue(tonumber(d.value) or 0) end
+            end,
+        },
+        Dropdown = {
+            Save = function(idx, o)
+                return { type = "Dropdown", idx = idx, value = o.Value, multi = o.Multi }
+            end,
+            Load = function(idx, d)
+                if Library.Options[idx] then Library.Options[idx]:SetValue(d.value) end
+            end,
+        },
+        ColorPicker = {
+            Save = function(idx, o)
+                return { type = "ColorPicker", idx = idx,
+                    value = o.Value:ToHex(), transparency = o.Transparency or 0 }
+            end,
+            Load = function(idx, d)
+                if Library.Options[idx] then
+                    pcall(function()
+                        Library.Options[idx]:SetValueRGB(Color3.fromHex(d.value), d.transparency)
+                    end)
+                end
+            end,
+        },
+        KeyPicker = {
+            Save = function(idx, o)
+                return { type = "KeyPicker", idx = idx, mode = o.Mode, key = o.Value }
+            end,
+            Load = function(idx, d)
+                if Library.Options[idx] then Library.Options[idx]:SetValue({ d.key, d.mode }) end
+            end,
+        },
+        Input = {
+            Save = function(idx, o) return { type = "Input", idx = idx, text = o.Value } end,
+            Load = function(idx, d)
+                if Library.Options[idx] and type(d.text) == "string" then
+                    Library.Options[idx]:SetValue(d.text)
+                end
+            end,
+        },
+    }
+
+    function SaveManager:SetLibrary(lib) self.Library = lib end
+
+    function SaveManager:BuildFolderTree()
+        for _, p in { self.Folder, self.Folder .. "/themes", self.Folder .. "/settings" } do
+            if not isfolder(p) then makefolder(p) end
+        end
+    end
+
+    function SaveManager:SetFolder(folder)
+        self.Folder = folder
+        self:BuildFolderTree()
+    end
+
+    function SaveManager:SetIgnoreIndexes(list)
+        for _, key in list do self.Ignore[key] = true end
+    end
+
+    function SaveManager:IgnoreThemeSettings()
+        self:SetIgnoreIndexes({
+            "BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor",
+            "ThemeManager_ThemeList", "ThemeManager_CustomThemeList",
+            "ThemeManager_CustomThemeName",
+        })
+    end
+
+    function SaveManager:AddPreSaveHook(fn)
+        if type(fn) == "function" then self.PreSaveHooks[#self.PreSaveHooks + 1] = fn end
+    end
+
+    function SaveManager:AddPostLoadHook(fn)
+        if type(fn) == "function" then self.PostLoadHooks[#self.PostLoadHooks + 1] = fn end
+    end
+
+    function SaveManager:Save(name)
+        if not name or name == "" then return false, "no config name" end
+        local data = { objects = {} }
+
+        -- Walk Toggles + Options, dispatch via widget.Type, skip ignored keys.
+        for idx, w in Library.Toggles do
+            if not self.Ignore[idx] and w.Type and self.Parser[w.Type] then
+                data.objects[#data.objects + 1] = self.Parser[w.Type].Save(idx, w)
+            end
+        end
+        for idx, w in Library.Options do
+            if not self.Ignore[idx] and w.Type and self.Parser[w.Type] then
+                data.objects[#data.objects + 1] = self.Parser[w.Type].Save(idx, w)
+            end
+        end
+
+        for _, fn in self.PreSaveHooks do pcall(fn, data) end
+
+        local okE, json = pcall(HttpService.JSONEncode, HttpService, data)
+        if not okE then return false, "encode failed" end
+        local okC, payload = pcall(encrypt, json)
+        if not okC then return false, "encrypt failed" end
+
+        local fullPath = self.Folder .. "/settings/" .. name .. ".nch"
+        local okW, err = pcall(writefile, fullPath, payload)
+        if not okW then return false, "writefile failed: " .. tostring(err) end
+
+        -- Drop legacy plain-JSON copy so Load doesn't prefer stale data.
+        local legacy = self.Folder .. "/settings/" .. name .. ".json"
+        if isfile(legacy) then pcall(delfile, legacy) end
+        return true
+    end
+
+    function SaveManager:Load(name)
+        if not name or name == "" then return false, "no config name" end
+        local enc    = self.Folder .. "/settings/" .. name .. ".nch"
+        local legacy = self.Folder .. "/settings/" .. name .. ".json"
+
+        local raw
+        if isfile(enc) then
+            local payload = readfile(enc)
+            local okD, plain = pcall(decrypt, payload)
+            if not okD or type(plain) ~= "string" then return false, "decrypt failed" end
+            raw = plain
+        elseif isfile(legacy) then
+            raw = readfile(legacy)
+        else
+            return false, "config not found"
+        end
+
+        local okD, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+        if not okD or type(decoded) ~= "table" or type(decoded.objects) ~= "table" then
+            return false, "decode failed"
+        end
+
+        for _, obj in decoded.objects do
+            local parser = self.Parser[obj.type]
+            if parser then task.spawn(function() parser.Load(obj.idx, obj) end) end
+        end
+        for _, fn in self.PostLoadHooks do
+            task.spawn(function() pcall(fn, decoded) end)
+        end
+        return true
+    end
+
+    function SaveManager:RefreshConfigList()
+        local list = pcall(listfiles, self.Folder .. "/settings") and listfiles(self.Folder .. "/settings") or {}
+        local out, seen = {}, {}
+        for _, file in list do
+            local ext = file:sub(-4)
+            local isCfg = ext == ".nch" or file:sub(-5) == ".json"
+            if isCfg then
+                local extLen = ext == ".nch" and 4 or 5
+                local stop = #file - extLen
+                local pos = stop
+                while pos > 0 do
+                    local ch = file:sub(pos, pos)
+                    if ch == "/" or ch == "\\" then break end
+                    pos = pos - 1
+                end
+                local name = file:sub(pos + 1, stop)
+                if not seen[name] then
+                    seen[name] = true
+                    out[#out + 1] = name
+                end
+            end
+        end
+        return out
+    end
+
+    function SaveManager:BuildConfigSection(tab)
+        assert(self.Library, "SaveManager: SetLibrary first")
+        local gb = tab:AddRightGroupbox("Configuration")
+        gb:AddInput("SaveManager_ConfigName", { Text = "Config name" })
+        gb:AddDropdown("SaveManager_ConfigList", {
+            Text = "Config list",
+            Values = self:RefreshConfigList(),
+            AllowNull = true,
+        })
+        gb:AddDivider()
+        gb:AddButton("Create config", function()
+            local name = Library.Options.SaveManager_ConfigName.Value
+            if not name or name:gsub(" ", "") == "" then
+                return self.Library:Notify("Invalid config name", 2)
+            end
+            local ok, err = self:Save(name)
+            if not ok then return self.Library:Notify("Save failed: " .. tostring(err), 3) end
+            self.Library:Notify("Created config '" .. name .. "'", 2)
+            Library.Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
+        end)
+        gb:AddButton("Load config", function()
+            local name = Library.Options.SaveManager_ConfigList.Value
+            if not name or name == "" then
+                return self.Library:Notify("Pick a config first", 2)
+            end
+            local ok, err = self:Load(name)
+            if not ok then return self.Library:Notify("Load failed: " .. tostring(err), 3) end
+            self.Library:Notify("Loaded config '" .. name .. "'", 2)
+            Library._CurrentConfig = name
+        end)
+        gb:AddButton("Overwrite", function()
+            local name = Library.Options.SaveManager_ConfigList.Value
+            if not name or name == "" then
+                return self.Library:Notify("Pick a config first", 2)
+            end
+            local ok, err = self:Save(name)
+            if not ok then return self.Library:Notify("Save failed: " .. tostring(err), 3) end
+            self.Library:Notify("Overwrote '" .. name .. "'", 2)
+        end)
+        gb:AddButton("Refresh list", function()
+            Library.Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
+        end)
+
+        self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName" })
+    end
+
+    SaveManager:BuildFolderTree()
+    Library.SaveManager = SaveManager
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- ThemeManager — palette presets + custom theme save/load.
+-- Preset colors map to Library's Theme.* fields. Live ColorPicker changes
+-- propagate to Library.<slot> fields, but already-rendered widgets keep
+-- their construction-time colors — re-running the script applies the new
+-- theme everywhere.
+-- ══════════════════════════════════════════════════════════════════════════
+do
+    local HttpService = game:GetService("HttpService")
+    local ThemeManager = {
+        Folder       = "sanyui",
+        Library      = Library,
+        DefaultTheme = "Default",
+    }
+
+    -- ThemeManager color slots → Library Theme.* field that drives renderer.
+    local SLOT_TO_THEME = {
+        BackgroundColor = "WindowBg",
+        MainColor       = "TabBg",
+        AccentColor     = "Accent",
+        OutlineColor    = "BorderHi",
+        FontColor       = "Text",
+    }
+    local THEME_FIELDS = { "FontColor", "MainColor", "AccentColor", "BackgroundColor", "OutlineColor" }
+
+    ThemeManager.BuiltInThemes = {
+        ["Default"]      = { 1, { FontColor="e1e1e1", MainColor="191919", AccentColor="93c539", BackgroundColor="121212", OutlineColor="3d3d3d" }},
+        ["Amethyst"]     = { 2, { FontColor="ffffff", MainColor="1a1625", AccentColor="9b59b6", BackgroundColor="141022", OutlineColor="2b2339" }},
+        ["Fatality"]     = { 3, { FontColor="ffffff", MainColor="1e1842", AccentColor="c50754", BackgroundColor="191335", OutlineColor="3c355d" }},
+        ["Jester"]       = { 4, { FontColor="ffffff", MainColor="242424", AccentColor="db4467", BackgroundColor="1c1c1c", OutlineColor="373737" }},
+        ["Mint"]         = { 5, { FontColor="ffffff", MainColor="242424", AccentColor="3db488", BackgroundColor="1c1c1c", OutlineColor="373737" }},
+        ["Tokyo Night"]  = { 6, { FontColor="ffffff", MainColor="191925", AccentColor="6759b3", BackgroundColor="16161f", OutlineColor="323232" }},
+        ["Sunset"]       = { 7, { FontColor="ffffff", MainColor="3e3e3e", AccentColor="e2581e", BackgroundColor="323232", OutlineColor="191919" }},
+        ["Quartz"]       = { 8, { FontColor="ffffff", MainColor="232330", AccentColor="426e87", BackgroundColor="1d1b26", OutlineColor="27232f" }},
+        ["Classic Blue"] = { 9, { FontColor="ffffff", MainColor="1c1c1c", AccentColor="0055ff", BackgroundColor="141414", OutlineColor="323232" }},
+    }
+
+    function ThemeManager:SetLibrary(lib) self.Library = lib end
+
+    function ThemeManager:BuildFolderTree()
+        local parts = self.Folder:split("/")
+        local paths = {}
+        for i = 1, #parts do paths[#paths + 1] = table.concat(parts, "/", 1, i) end
+        paths[#paths + 1] = self.Folder .. "/themes"
+        paths[#paths + 1] = self.Folder .. "/settings"
+        for _, p in paths do
+            if not isfolder(p) then makefolder(p) end
+        end
+    end
+
+    function ThemeManager:SetFolder(folder)
+        self.Folder = folder
+        self:BuildFolderTree()
+    end
+
+    -- Apply a palette (hex-string table) to the library. Updates BOTH
+    -- Library.<slot> aliases AND Theme.<themeField> so subsequent widgets
+    -- render with the new colors. Doesn't retroactively repaint existing
+    -- widgets (would require a full color registry which the library
+    -- intentionally doesn't carry).
+    local function applyPalette(palette)
+        for slot, hex in palette do
+            local col = Color3.fromHex(hex)
+            Library[slot] = col
+            local themeKey = SLOT_TO_THEME[slot]
+            if themeKey then Theme[themeKey] = col end
+            if Library.Options[slot] then
+                pcall(function() Library.Options[slot]:SetValueRGB(col) end)
+            end
+        end
+        Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor)
+    end
+
+    function ThemeManager:ApplyTheme(name)
+        local custom = self:GetCustomTheme(name)
+        if custom then applyPalette(custom); return end
+        local entry = self.BuiltInThemes[name]
+        if entry then applyPalette(entry[2]) end
+    end
+
+    function ThemeManager:GetCustomTheme(file)
+        if not file or file == "" then return nil end
+        local path = self.Folder .. "/themes/" .. file
+        if not isfile(path) then return nil end
+        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+        return ok and decoded or nil
+    end
+
+    function ThemeManager:SaveCustomTheme(file)
+        if not file or file:gsub(" ", "") == "" then
+            return self.Library:Notify("Invalid theme name", 3)
+        end
+        local theme = {}
+        for _, field in THEME_FIELDS do
+            if Library.Options[field] and Library.Options[field].Value then
+                theme[field] = Library.Options[field].Value:ToHex()
+            end
+        end
+        pcall(writefile, self.Folder .. "/themes/" .. file .. ".json",
+            HttpService:JSONEncode(theme))
+    end
+
+    function ThemeManager:ReloadCustomThemes()
+        local out = {}
+        local ok, list = pcall(listfiles, self.Folder .. "/themes")
+        if not ok then return out end
+        for _, file in list do
+            if file:sub(-5) == ".json" then
+                local pos = #file - 5
+                while pos > 0 do
+                    local ch = file:sub(pos, pos)
+                    if ch == "/" or ch == "\\" then break end
+                    pos = pos - 1
+                end
+                out[#out + 1] = file:sub(pos + 1)
+            end
+        end
+        return out
+    end
+
+    function ThemeManager:LoadDefault()
+        local path = self.Folder .. "/themes/default.txt"
+        local theme = self.DefaultTheme
+        if isfile(path) then
+            local saved = readfile(path)
+            if self.BuiltInThemes[saved] or self:GetCustomTheme(saved) then
+                theme = saved
+            end
+        end
+        if Library.Options.ThemeManager_ThemeList then
+            Library.Options.ThemeManager_ThemeList:SetValue(theme)
+        else
+            self:ApplyTheme(theme)
+        end
+    end
+
+    function ThemeManager:SaveDefault(theme)
+        pcall(writefile, self.Folder .. "/themes/default.txt", theme)
+    end
+
+    function ThemeManager:CreateThemeManager(gb)
+        gb:AddLabel("Background"):AddColorPicker("BackgroundColor", { Default = Library.BackgroundColor })
+        gb:AddLabel("Main")      :AddColorPicker("MainColor",       { Default = Library.MainColor })
+        gb:AddLabel("Accent")    :AddColorPicker("AccentColor",     { Default = Library.AccentColor })
+        gb:AddLabel("Outline")   :AddColorPicker("OutlineColor",    { Default = Library.OutlineColor })
+        gb:AddLabel("Font")      :AddColorPicker("FontColor",       { Default = Library.FontColor })
+
+        local names = {}
+        for n in self.BuiltInThemes do names[#names + 1] = n end
+        table.sort(names, function(a, b)
+            return self.BuiltInThemes[a][1] < self.BuiltInThemes[b][1]
+        end)
+
+        gb:AddDivider()
+        gb:AddDropdown("ThemeManager_ThemeList", { Text = "Preset", Values = names, Default = 1 })
+        gb:AddButton("Set as default", function()
+            self:SaveDefault(Library.Options.ThemeManager_ThemeList.Value)
+            self.Library:Notify("Set default theme", 2)
+        end)
+        Library.Options.ThemeManager_ThemeList:OnChanged(function()
+            self:ApplyTheme(Library.Options.ThemeManager_ThemeList.Value)
+        end)
+
+        gb:AddDivider()
+        gb:AddInput("ThemeManager_CustomThemeName", { Text = "Custom theme name" })
+        gb:AddDropdown("ThemeManager_CustomThemeList", {
+            Text = "Custom themes",
+            Values = self:ReloadCustomThemes(),
+            AllowNull = true, Default = 1,
+        })
+        gb:AddButton("Save theme", function()
+            self:SaveCustomTheme(Library.Options.ThemeManager_CustomThemeName.Value)
+            Library.Options.ThemeManager_CustomThemeList:SetValues(self:ReloadCustomThemes())
+        end)
+        gb:AddButton("Load theme", function()
+            local val = Library.Options.ThemeManager_CustomThemeList.Value
+            if val and val ~= "" then self:ApplyTheme(val) end
+        end)
+        gb:AddButton("Refresh list", function()
+            Library.Options.ThemeManager_CustomThemeList:SetValues(self:ReloadCustomThemes())
+        end)
+
+        -- Live updates: changing any ColorPicker updates Library.<slot> + Theme.
+        local function refresh()
+            for _, field in THEME_FIELDS do
+                if Library.Options[field] then
+                    Library[field] = Library.Options[field].Value
+                    local themeKey = SLOT_TO_THEME[field]
+                    if themeKey then Theme[themeKey] = Library.Options[field].Value end
+                end
+            end
+            Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor)
+        end
+        for _, field in THEME_FIELDS do
+            if Library.Options[field] then Library.Options[field]:OnChanged(refresh) end
+        end
+
+        self:LoadDefault()
+    end
+
+    function ThemeManager:ApplyToTab(tab)
+        assert(self.Library, "ThemeManager: SetLibrary first")
+        local gb = tab:AddLeftGroupbox("Themes")
+        self:CreateThemeManager(gb)
+    end
+
+    ThemeManager:BuildFolderTree()
+    Library.ThemeManager = ThemeManager
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- ESPPreview — draggable preview window with a 3D rotatable R15 character
+-- in a ViewportFrame, surrounded by the same ESP box overlay the real
+-- script renders. Lets users dial in ESP settings without needing visible
+-- enemies in-game.
+--
+-- Drag the character: hold MB1 inside the viewport and move the mouse —
+-- the character spins on its Y axis (yaw) following horizontal motion,
+-- and pitches on the X axis (clamped to ±60°) following vertical motion.
+-- Right-click drag pans the camera up/down.
+-- ══════════════════════════════════════════════════════════════════════════
+do
+    local Players      = game:GetService("Players")
+    local RunService   = game:GetService("RunService")
+    local LocalPlayer  = Players.LocalPlayer
+
+    local ESPPreview = {
+        Library      = Library,
+        Bound        = {},
+        _wantsVisible = false,
+        _visible     = false,
+        FakeData     = {
+            Name           = "EnemyPlayer",
+            Distance       = "42m",
+            MovementState  = "Move",
+            HeldWeapon     = "AK-47",
+            Teams          = "Terrorists",
+        },
+    }
+
+    local ESP_INFO_TYPES = { "Name", "Distance", "MovementState", "HeldWeapon", "Teams" }
+
+    function ESPPreview:SetLibrary(lib) self.Library = lib end
+    function ESPPreview:SetFakeData(t)
+        if type(t) ~= "table" then return end
+        for k, v in t do self.FakeData[k] = v end
+    end
+
+    local Outer, Viewport, BoxOverlay, Labels, Healthbars, RotationState
+    local boxRot, fillRot = 0, 0
+
+    -- Build a Camera + clone of LocalPlayer.Character (or a placeholder rig)
+    -- into a WorldModel inside the ViewportFrame. Returns (worldModel, char,
+    -- camera, hrp, head). Rebuilt whenever the character respawns.
+    local function buildSceneInto(vp)
+        for _, c in vp:GetChildren() do
+            if c:IsA("WorldModel") or c:IsA("Camera") then
+                pcall(c.Destroy, c)
+            end
+        end
+        local wm = Instance.new("WorldModel")
+        wm.Parent = vp
+
+        local cam = Instance.new("Camera")
+        cam.FieldOfView = 30
+        cam.Parent = vp
+        vp.CurrentCamera = cam
+
+        -- Try to clone the local player's character. Falls back to building
+        -- a simple block-figure if no character (loadout screen / pre-spawn /
+        -- spectator state). Archivable=true on the original is required for
+        -- :Clone() to succeed; we set it back to its previous value after.
+        local char
+        local origChar = LocalPlayer.Character
+        if origChar then
+            local origArchivable = origChar.Archivable
+            pcall(function() origChar.Archivable = true end)
+            local ok, clone = pcall(origChar.Clone, origChar)
+            pcall(function() origChar.Archivable = origArchivable end)
+            if ok and clone then
+                char = clone
+                -- Strip scripts so the cloned character can't run anything
+                -- inside our viewport. Also drop any BillboardGui ESP we
+                -- attached to the real character so the preview's overlay
+                -- doesn't render twice.
+                for _, d in char:GetDescendants() do
+                    if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
+                       or d:IsA("BillboardGui") then
+                        pcall(d.Destroy, d)
+                    end
+                end
+                -- Reset transparency so the cloned char isn't hidden by the
+                -- ThirdPerson LTM flips we did on the live one.
+                for _, p in char:GetDescendants() do
+                    if p:IsA("BasePart") then
+                        pcall(function()
+                            p.LocalTransparencyModifier = 0
+                            p.Anchored = true
+                            p.CanCollide = false
+                        end)
+                    end
+                end
+            end
+        end
+
+        if not char then
+            -- Generic R15-ish placeholder. Simple sized capsules so the user
+            -- still sees a humanoid silhouette to position ESP around.
+            char = Instance.new("Model")
+            char.Name = "Placeholder"
+            local function part(name, sz, pos, col)
+                local p = Instance.new("Part")
+                p.Name = name; p.Anchored = true; p.CanCollide = false
+                p.Size = sz; p.CFrame = CFrame.new(pos)
+                p.Color = col; p.Material = Enum.Material.Plastic
+                p.TopSurface = Enum.SurfaceType.Smooth
+                p.BottomSurface = Enum.SurfaceType.Smooth
+                p.Parent = char
+                return p
+            end
+            local skin = Color3.fromRGB(204, 142, 105)
+            part("Head", Vector3.new(1, 1, 1), Vector3.new(0, 4.5, 0), skin)
+            local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1),
+                Vector3.new(0, 3, 0), Color3.fromRGB(40, 40, 80))
+            char.PrimaryPart = hrp
+            part("UpperTorso", Vector3.new(2, 1, 1), Vector3.new(0, 3.5, 0), Color3.fromRGB(40, 40, 80))
+            part("LowerTorso", Vector3.new(2, 1, 1), Vector3.new(0, 2.5, 0), Color3.fromRGB(40, 40, 80))
+            part("LeftUpperArm",  Vector3.new(1, 1.5, 1), Vector3.new(-1.5,  3.25, 0), skin)
+            part("RightUpperArm", Vector3.new(1, 1.5, 1), Vector3.new( 1.5,  3.25, 0), skin)
+            part("LeftUpperLeg",  Vector3.new(1, 1.5, 1), Vector3.new(-0.5,  1.25, 0), Color3.fromRGB(50, 50, 50))
+            part("RightUpperLeg", Vector3.new(1, 1.5, 1), Vector3.new( 0.5,  1.25, 0), Color3.fromRGB(50, 50, 50))
+        end
+
+        char.Parent = wm
+
+        local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+        local head = char:FindFirstChild("Head")
+        if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
+
+        return wm, char, cam, hrp, head
+    end
+
+    -- One-time window build. Called the first time Show() fires.
+    local function build()
+        if Outer then return end
+
+        -- Outer + 5-stroke composite borders (matches the main Window's chrome).
+        local W, H = 280, 360
+        Outer = mk("Frame", { Parent = ScreenGui,
+            AnchorPoint = Vector2.new(0, 0),
+            Position = UDim2.new(1, -(W + 80), 0, 80),
+            Size = UDim2.fromOffset(W, H),
+            BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+            Visible = false, ZIndex = 230, Active = true })
+        applyLayeredStrokes(Outer, "outer")
+
+        -- Title bar (drag handle area).
+        local titleBar = mk("Frame", { Parent = Outer,
+            Size = UDim2.new(1, -14, 0, 22), Position = UDim2.fromOffset(7, 7),
+            BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 231 })
+        mkText("TextLabel", { Parent = titleBar, ZIndex = 232,
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(1, -16, 1, 0),
+            BackgroundTransparency = 1, Text = "ESP Preview",
+            TextSize = 12, TextColor3 = Theme.TextActive,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+        }, "bold")
+        -- Accent underline on the title bar — matches the main window's
+        -- rainbow strip but trimmed since the preview is a satellite panel.
+        mk("Frame", { Parent = Outer, ZIndex = 233,
+            Size = UDim2.new(1, -14, 0, 1), Position = UDim2.fromOffset(7, 29),
+            BackgroundColor3 = Theme.Accent, BorderSizePixel = 0 })
+
+        -- Inner content frame (inner 5-stroke border + TabBg).
+        local content = mk("Frame", { Parent = Outer, ZIndex = 231,
+            Position = UDim2.fromOffset(14, 36),
+            Size = UDim2.new(1, -28, 1, -50),
+            BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0 })
+        applyLayeredStrokes(content, "inner")
+
+        -- ViewportFrame in the center. 3D char gets parented inside.
+        Viewport = mk("ViewportFrame", { Parent = content, ZIndex = 232,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(140, 240),
+            BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+            Ambient = Color3.fromRGB(180, 180, 180),
+            LightColor = Color3.fromRGB(255, 255, 255),
+            LightDirection = Vector3.new(-0.3, -1, -0.5),
+            Active = true,
+        })
+
+        -- ESP overlay — drawn ON TOP of the viewport, anchored to its edges.
+        -- Mirrors the structure of the real ESP billboard's box layers.
+        BoxOverlay = {}
+
+        -- 5-stroke composite box around the viewport.
+        local function makeBoxLayer(name, posOff, sizeOff, color, zi)
+            local f = mk("Frame", { Parent = content, ZIndex = zi,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.fromOffset(140 + sizeOff, 240 + sizeOff),
+                BackgroundColor3 = color, BorderSizePixel = 0,
+                BackgroundTransparency = 1 })
+            return f
+        end
+
+        BoxOverlay.outerBox = makeBoxLayer("outer",  0, 2, Color3.new(0, 0, 0), 233)
+        BoxOverlay.colorRing = makeBoxLayer("color", 0, 0, Color3.new(1, 1, 1), 234)
+        BoxOverlay.innerBox = makeBoxLayer("inner", 0, -2, Color3.new(0, 0, 0), 235)
+        BoxOverlay.fillBox  = mk("Frame", { Parent = content, ZIndex = 234,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(140, 240),
+            BackgroundColor3 = Theme.WindowBg, BorderSizePixel = 0,
+            BackgroundTransparency = 1 })
+        local fillGrad = Instance.new("UIGradient"); fillGrad.Enabled = false; fillGrad.Parent = BoxOverlay.fillBox
+        local colorRingGrad = Instance.new("UIGradient"); colorRingGrad.Enabled = false; colorRingGrad.Parent = BoxOverlay.colorRing
+        BoxOverlay.fillGrad = fillGrad
+        BoxOverlay.colorRingGrad = colorRingGrad
+
+        -- Labels (Top / Right / Left / Down) — anchored relative to viewport.
+        local function makeLabel(anchor, align, posY, sizeX, sizeY)
+            local l = mkText("TextLabel", { Parent = content, ZIndex = 236,
+                AnchorPoint = anchor,
+                Position = UDim2.new(0.5, 0, 0.5, posY),
+                Size = UDim2.fromOffset(sizeX, sizeY),
+                BackgroundTransparency = 1, Text = "",
+                TextColor3 = Color3.new(1, 1, 1), TextSize = 12,
+                TextXAlignment = align, Visible = false,
+            }, "reg")
+            return l
+        end
+        Labels = {
+            Top   = makeLabel(Vector2.new(0.5, 1), Enum.TextXAlignment.Center, -125, 140, 14),
+            Down  = makeLabel(Vector2.new(0.5, 0), Enum.TextXAlignment.Center,  125, 140, 14),
+            Left  = makeLabel(Vector2.new(1, 0.5), Enum.TextXAlignment.Right,  0, 50, 240),
+            Right = makeLabel(Vector2.new(0, 0.5), Enum.TextXAlignment.Left,   0, 50, 240),
+        }
+        Labels.Left.Position  = UDim2.new(0.5, -76, 0.5, 0)
+        Labels.Right.Position = UDim2.new(0.5,  76, 0.5, 0)
+
+        -- Healthbar (top position only — same default the real ESP uses).
+        local hb = mk("Frame", { Parent = content, ZIndex = 235,
+            AnchorPoint = Vector2.new(0.5, 1),
+            Position = UDim2.new(0.5, 0, 0.5, -123),
+            Size = UDim2.fromOffset(140, 2),
+            BackgroundColor3 = Color3.fromRGB(12, 255, 93), BorderSizePixel = 0,
+            Visible = false })
+        Healthbars = { Top = hb }
+
+        -- Drag the WINDOW from the title bar.
+        do
+            local drag, ds, sp
+            track(titleBar.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                   or input.UserInputType == Enum.UserInputType.Touch then
+                    drag = true; ds = input.Position; sp = Outer.Position
+                end
+            end))
+            track(UserInputService.InputChanged:Connect(function(input)
+                if not drag then return end
+                if input.UserInputType == Enum.UserInputType.MouseMovement
+                   or input.UserInputType == Enum.UserInputType.Touch then
+                    local d = input.Position - ds
+                    Outer.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X,
+                                               sp.Y.Scale, sp.Y.Offset + d.Y)
+                end
+            end))
+            track(UserInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                   or input.UserInputType == Enum.UserInputType.Touch then drag = false end
+            end))
+        end
+
+        -- Rotate the CHARACTER inside the viewport. Holding MB1 inside the
+        -- viewport spins the character on its Y axis; vertical motion
+        -- pitches the camera (clamped ±60°). Releasing MB1 leaves it where
+        -- the user left it (no auto-spin), matching what the user asked for.
+        RotationState = { yaw = 0, pitch = 0, dist = 8,
+            dragging = false, last = nil }
+        track(Viewport.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                RotationState.dragging = true
+                RotationState.last = input.Position
+            end
+        end))
+        track(UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                RotationState.dragging = false
+            end
+        end))
+        track(UserInputService.InputChanged:Connect(function(input)
+            if not RotationState.dragging then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local last = RotationState.last
+            if not last then RotationState.last = input.Position; return end
+            local dx = input.Position.X - last.X
+            local dy = input.Position.Y - last.Y
+            RotationState.last = input.Position
+            RotationState.yaw   = (RotationState.yaw + dx * 0.01) % (math.pi * 2)
+            RotationState.pitch = math.clamp(RotationState.pitch - dy * 0.01,
+                math.rad(-60), math.rad(60))
+        end))
+
+        -- Mouse wheel inside viewport = zoom (4..16 stud distance from char).
+        track(Viewport.InputChanged:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+            RotationState.dist = math.clamp(RotationState.dist - input.Position.Z * 0.5, 4, 16)
+        end))
+
+        ESPPreview._content = content
+        ESPPreview._titleBar = titleBar
+    end
+
+    -- Rebuild scene whenever requested (initial show + character respawn).
+    local function rebuildScene()
+        if not Viewport then return end
+        local wm, char, cam, hrp, head = buildSceneInto(Viewport)
+        ESPPreview._wm   = wm
+        ESPPreview._char = char
+        ESPPreview._cam  = cam
+        ESPPreview._hrp  = hrp
+        ESPPreview._head = head
+    end
+
+    -- Per-frame: position camera around the character (orbit at RotationState
+    -- distance / yaw / pitch) and update ESP overlay colors + label texts
+    -- from the live Toggles/Options.
+    local function update(dt)
+        if not Outer or not Outer.Visible then return end
+
+        -- Auto-rebuild on character respawn.
+        if not ESPPreview._char or not ESPPreview._char.Parent then
+            rebuildScene()
+        end
+        local char, cam = ESPPreview._char, ESPPreview._cam
+        if not char or not cam then return end
+
+        -- Orbit camera. Center = HRP position (or model PrimaryPart, or
+        -- (0, 3, 0) fallback for clones whose HRP got destroyed).
+        local center
+        if ESPPreview._hrp and ESPPreview._hrp.Parent then
+            center = ESPPreview._hrp.Position
+        elseif char.PrimaryPart then
+            center = char.PrimaryPart.Position
+        else
+            center = Vector3.new(0, 3, 0)
+        end
+        local yaw, pitch, dist = RotationState.yaw, RotationState.pitch, RotationState.dist
+        local cx = math.cos(pitch) * math.sin(yaw) * dist
+        local cz = math.cos(pitch) * math.cos(yaw) * dist
+        local cy = math.sin(pitch) * dist + 1.5  -- 1.5 stud uplift so eye-line lands on the head
+        cam.CFrame = CFrame.new(center + Vector3.new(cx, cy, cz), center)
+
+        -- ESP overlay reads SAME Toggles/Options the main ESP loop reads,
+        -- so the preview reflects the user's exact configured look.
+        local boxOn  = Toggles.ESPBox  and Toggles.ESPBox.Value
+        local fillOn = Toggles.ESPFill and Toggles.ESPFill.Value
+        local hbOn   = Toggles.ESPHealthbar and Toggles.ESPHealthbar.Value
+
+        BoxOverlay.outerBox.BackgroundTransparency  = boxOn and 0 or 1
+        BoxOverlay.colorRing.BackgroundTransparency = boxOn and 0 or 1
+        BoxOverlay.innerBox.BackgroundTransparency  = boxOn and 0 or 1
+
+        if boxOn then
+            local c1 = Options.ESPBoxColor and Options.ESPBoxColor.Value or Color3.new(1, 1, 1)
+            if Toggles.ESPBoxGradient and Toggles.ESPBoxGradient.Value then
+                local c2 = Options.ESPBoxColor2 and Options.ESPBoxColor2.Value or Color3.new(1, 0, 0)
+                BoxOverlay.colorRingGrad.Enabled = true
+                BoxOverlay.colorRingGrad.Color = ColorSequence.new{
+                    ColorSequenceKeypoint.new(0, c1), ColorSequenceKeypoint.new(1, c2),
+                }
+                if Toggles.ESPBoxRotation and Toggles.ESPBoxRotation.Value then
+                    local rs = Options.ESPBoxGradRot and Options.ESPBoxGradRot.Value or 90
+                    boxRot = (boxRot + rs * dt) % 360
+                    BoxOverlay.colorRingGrad.Rotation = boxRot
+                end
+                BoxOverlay.colorRing.BackgroundColor3 = Color3.new(1, 1, 1)
+            else
+                BoxOverlay.colorRingGrad.Enabled = false
+                BoxOverlay.colorRing.BackgroundColor3 = c1
+            end
+        end
+
+        if fillOn and boxOn then
+            local fc = Options.ESPFillColor and Options.ESPFillColor.Value or Color3.new(1, 1, 1)
+            local ft = Options.ESPFillTrans and Options.ESPFillTrans.Value or 0.8
+            BoxOverlay.fillBox.BackgroundColor3 = fc
+            BoxOverlay.fillBox.BackgroundTransparency = ft
+        else
+            BoxOverlay.fillBox.BackgroundTransparency = 1
+        end
+
+        -- Healthbar at 100% (preview is static).
+        local hb = Healthbars.Top
+        if hbOn then
+            hb.Visible = true
+            local c = Options.ESPHealthbarColor and Options.ESPHealthbarColor.Value or Color3.fromRGB(12, 255, 93)
+            hb.BackgroundColor3 = c
+        else
+            hb.Visible = false
+        end
+
+        -- Labels: build per-position text from enabled toggles + fake data,
+        -- mirroring the real ESP's per-info dispatch.
+        local bufs = { Top = {}, Right = {}, Left = {}, Down = {} }
+        local cols = {}
+        local sizes = {}
+        for _, it in ESP_INFO_TYPES do
+            local tn = "ESP" .. it
+            if Toggles[tn] and Toggles[tn].Value then
+                local pos = Options["ESP" .. it .. "Pos"] and Options["ESP" .. it .. "Pos"].Value or "Top"
+                local txt = ESPPreview.FakeData[it] or ""
+                if txt ~= "" then
+                    local b = bufs[pos]
+                    if b then
+                        b[#b + 1] = txt
+                        cols[pos] = cols[pos] or (Options["ESP" .. it .. "Color"]
+                            and Options["ESP" .. it .. "Color"].Value or Color3.new(1, 1, 1))
+                        sizes[pos] = Options["ESP" .. it .. "Size"]
+                            and Options["ESP" .. it .. "Size"].Value or 12
+                    end
+                end
+            end
+        end
+        for pos, lbl in Labels do
+            local b = bufs[pos]
+            if b and #b > 0 then
+                local sep = (pos == "Top" or pos == "Down") and " | " or "\n"
+                lbl.Text = table.concat(b, sep)
+                lbl.TextColor3 = cols[pos] or Color3.new(1, 1, 1)
+                lbl.TextSize = sizes[pos] or 12
+                lbl.Visible = true
+            else
+                lbl.Visible = false
+            end
+        end
+    end
+
+    function ESPPreview:Show()
+        build()
+        if not ESPPreview._char or not ESPPreview._char.Parent then rebuildScene() end
+        Outer.Visible = true
+        self._visible = true
+        if not self._conn then
+            self._conn = track(RunService.RenderStepped:Connect(update))
+        end
+    end
+
+    function ESPPreview:Hide()
+        if Outer then Outer.Visible = false end
+        self._visible = false
+    end
+
+    function ESPPreview:Toggle()
+        if self._visible then self:Hide() else self:Show() end
+    end
+
+    -- Bind one or more tabs. Preview shows when any bound tab is active +
+    -- the menu is open. Hides otherwise.
+    function ESPPreview:BindTabs(window, tabs)
+        if type(tabs) ~= "table" then tabs = { tabs } end
+        for _, tab in tabs do self.Bound[tab] = true end
+
+        local function syncVisibility()
+            local shouldShow = false
+            if Library.Visible and window._activeTab then
+                shouldShow = self.Bound[window._activeTab] or false
+            end
+            if shouldShow then self:Show() else self:Hide() end
+        end
+
+        -- Hook SelectTab so we can poll on every tab change.
+        local origSelect = window.SelectTab
+        window.SelectTab = function(self_, tab)
+            origSelect(self_, tab)
+            syncVisibility()
+        end
+        -- Also re-evaluate on menu open/close.
+        track(RunService.Heartbeat:Connect(function()
+            -- Cheap visibility check — 60Hz is fine, only flips state on change.
+            if Library.Visible then
+                if not self._lastMenuOpen then syncVisibility() end
+                self._lastMenuOpen = true
+            else
+                if self._lastMenuOpen then self:Hide() end
+                self._lastMenuOpen = false
+            end
+        end))
+        syncVisibility()
+    end
+
+    -- Backward-compat: standalone addon had BindTab (singular). Alias both.
+    function ESPPreview:BindTab(window, tab) self:BindTabs(window, { tab }) end
+
+    Library.ESPPreview = ESPPreview
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Watermark customization — Settings tab gets a Watermark groupbox with a
+-- multi-select dropdown of fields: name, playername, clocktime, serverping,
+-- object count, fps, script runtime, config loaded. Updates the in-game
+-- watermark label every frame from the selected fields.
+--
+-- Use Library:CreateWatermarkSection(tab) to add the controls to a tab
+-- (typically Settings). The Settings handler is created automatically when
+-- the user calls it; without it, the watermark stays at whatever was last
+-- set via Library:SetWatermark.
+-- ══════════════════════════════════════════════════════════════════════════
+do
+    local RunService = game:GetService("RunService")
+    local Stats      = game:GetService("Stats")
+    local Players    = game:GetService("Players")
+    local LocalPlayer = Players.LocalPlayer
+    local SCRIPT_START = tick()
+
+    -- Ordered list for the multi-select dropdown. Display labels match the
+    -- user's request exactly (lowercase, spaces preserved). Each entry has
+    -- a "render()" that returns the live string.
+    local FIELDS_ORDER = {
+        "name", "playername", "clocktime", "serverping",
+        "object count", "fps", "script runtime", "config loaded",
+    }
+
+    local lastFrameTime = tick()
+    local frameDelta = 1 / 60
+    -- Sampled FPS — simple EMA so the readout doesn't flicker.
+    local emaFps = 60
+
+    -- Per-field render functions. Defined inside the IIFE so they capture
+    -- LocalPlayer / Stats etc. as upvalues.
+    local FIELD_PROVIDERS = {
+        ["name"] = function()
+            return Library._WatermarkName or "nachtara"
+        end,
+        ["playername"] = function()
+            return LocalPlayer.DisplayName or LocalPlayer.Name
+        end,
+        ["clocktime"] = function()
+            return os.date("%H:%M:%S")
+        end,
+        ["serverping"] = function()
+            -- Stats.PerformanceStats:WaitForChild("Ping") is the canonical
+            -- read path. Falls back to LocalPlayer:GetNetworkPing()*1000 if
+            -- the perf stats aren't accessible on this executor.
+            local ok, ping = pcall(function()
+                return math.floor(LocalPlayer:GetNetworkPing() * 1000)
+            end)
+            if ok and ping then return ping .. "ms" end
+            return "?ms"
+        end,
+        ["object count"] = function()
+            -- Count immediate workspace descendants (fast). Full
+            -- :GetDescendants on workspace would be tens of thousands of
+            -- instances and stall the render thread.
+            return tostring(#workspace:GetChildren()) .. " objs"
+        end,
+        ["fps"] = function()
+            return tostring(math.floor(emaFps + 0.5)) .. " fps"
+        end,
+        ["script runtime"] = function()
+            local s = tick() - SCRIPT_START
+            local h = math.floor(s / 3600)
+            local m = math.floor((s % 3600) / 60)
+            local sec = math.floor(s % 60)
+            if h > 0 then
+                return string.format("%d:%02d:%02d", h, m, sec)
+            end
+            return string.format("%d:%02d", m, sec)
+        end,
+        ["config loaded"] = function()
+            return Library._CurrentConfig or "none"
+        end,
+    }
+
+    Library._WatermarkConfig = {
+        Enabled    = true,
+        Name       = "nachtara",
+        Fields     = { "name", "playername", "fps" },
+        Separator  = " | ",
+    }
+
+    -- Render the watermark text from the current selection.
+    local function renderWatermark()
+        local cfg = Library._WatermarkConfig
+        if not cfg.Enabled then
+            Library:SetWatermarkVisibility(false)
+            return
+        end
+        local parts = {}
+        for _, field in cfg.Fields do
+            local provider = FIELD_PROVIDERS[field]
+            if provider then
+                local ok, value = pcall(provider)
+                if ok and value ~= nil and value ~= "" then
+                    parts[#parts + 1] = tostring(value)
+                end
+            end
+        end
+        if #parts == 0 then
+            Library:SetWatermarkVisibility(false)
+            return
+        end
+        local sep = cfg.Separator or " | "
+        Library:SetWatermark(table.concat(parts, sep))
+    end
+
+    -- Per-frame: update FPS EMA + re-render the watermark. Cheap (a handful
+    -- of table reads + a SetWatermark call which itself just sets a Text
+    -- property when nothing changed-wise).
+    track(RunService.Heartbeat:Connect(function(dt)
+        frameDelta = dt
+        local instantFps = 1 / math.max(dt, 1/240)
+        emaFps = emaFps * 0.9 + instantFps * 0.1
+        if not Library.Unloaded then
+            pcall(renderWatermark)
+        end
+    end))
+
+    -- Public API to set the watermark name without going through the UI.
+    function Library:SetWatermarkName(name)
+        Library._WatermarkName = name
+        Library._WatermarkConfig.Name = name
+    end
+
+    function Library:GetWatermarkConfig()
+        return Library._WatermarkConfig
+    end
+
+    -- Builds a "Watermark" groupbox on the given tab with the multi-select
+    -- dropdown + custom name input + separator picker. Wires every control
+    -- to the live watermark renderer above.
+    function Library:CreateWatermarkSection(tab)
+        local gb = tab:AddLeftGroupbox("Watermark")
+        gb:AddToggle("Watermark_Enabled", { Text = "Show Watermark", Default = true,
+            Callback = function(v)
+                Library._WatermarkConfig.Enabled = v
+                if not v then Library:SetWatermarkVisibility(false) end
+            end,
+        })
+        gb:AddInput("Watermark_Name", {
+            Text = "Custom Name", Default = "nachtara", Placeholder = "nachtara",
+            Callback = function(v)
+                Library._WatermarkName = (v and v ~= "") and v or "nachtara"
+                Library._WatermarkConfig.Name = Library._WatermarkName
+            end,
+        })
+        gb:AddDropdown("Watermark_Fields", {
+            Text   = "Fields",
+            Values = FIELDS_ORDER,
+            Default = { "name", "playername", "fps" },
+            Multi  = true,
+            Callback = function(v)
+                -- v is a {[fieldName] = true} table. Convert to ordered
+                -- array following FIELDS_ORDER so the watermark layout
+                -- reflects the canonical sequence regardless of click
+                -- order in the dropdown.
+                local picked = {}
+                for _, name in FIELDS_ORDER do
+                    if v[name] then picked[#picked + 1] = name end
+                end
+                Library._WatermarkConfig.Fields = picked
+            end,
+        })
+        gb:AddDropdown("Watermark_Separator", {
+            Text = "Separator",
+            Values = { " | ", " - ", " · ", " // ", "  " },
+            Default = " | ",
+            Callback = function(v)
+                Library._WatermarkConfig.Separator = v or " | "
+            end,
+        })
+
+        -- Apply initial selection so the watermark starts populated from
+        -- the toggle defaults (rather than empty until the user clicks).
+        Library._WatermarkConfig.Enabled   = true
+        Library._WatermarkConfig.Fields    = { "name", "playername", "fps" }
+        Library._WatermarkConfig.Separator = " | "
+        Library._WatermarkName             = "nachtara"
+    end
+end
 
 return Library
