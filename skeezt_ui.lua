@@ -2393,11 +2393,15 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Width = text + Main side-inset (8+8) + Main side-padding (8+8) breathing.
-    local w = math.max(140, measureText(text, 11, "reg") + 40)
-    -- Height grew from 24 → 38 so the OUTER 5-stroke chrome (6px deep at the
-    -- -6 offset) and INNER Main (with its own 5-stroke composite) both have
-    -- room to render. Mirrors the Watermark proportions in miniature.
+    -- Width is sized EXACTLY to the text. Chrome budget = Main inset (6+6)
+    -- + label padding inside Main (4+4) = 20px total. Floor 60px so a 1-char
+    -- toast still has a visible frame. User feedback: notification was
+    -- noticeably wider than its text content — every extra pixel here was
+    -- visible empty space inside the rainbow strip.
+    local w = math.max(60, measureText(text, 11, "reg") + 20)
+    -- Height: 38 leaves room for OUTER 5-stroke (6px deep) + INNER Main with
+    -- its own 5-stroke composite. Mirrors the Watermark proportions in
+    -- miniature.
     local h = 38
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
@@ -2424,14 +2428,15 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Inner Main: TabBg, inset 8px sides / top 12 / bottom 8 so the OUTER
-    -- 5-stroke composite has visible WindowBg chrome around it. Mirrors the
-    -- Watermark structure (Main is a sibling-inset under the rainbow strip).
+    -- Inner Main: TabBg, inset 6px sides / top 12 / bottom 8. Tightened
+    -- from 8px so the rainbow strip and inner-5-stroke chrome fit closer
+    -- to the actual text content (user feedback: notification width
+    -- shouldn't have visible empty padding around the text).
     local main = mk("Frame", { Parent = outer,
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, -16, 1, -20),
-        Position = UDim2.fromOffset(8, 12), ZIndex = 201 })
+        Size = UDim2.new(1, -12, 1, -20),
+        Position = UDim2.fromOffset(6, 12), ZIndex = 201 })
     applyLayeredStrokes(main, "inner")
     local innerStrokes = {}
     for _, c in main:GetChildren() do
@@ -2460,12 +2465,14 @@ function Library:Notify(text, duration)
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label fills Main vertically-centered (Main height = h-20 = 18px,
-    -- comfortably fits the 11px text + outline). 8px horizontal padding
-    -- inside Main keeps the inner 5-stroke clear of the glyphs.
+    -- Label fills Main vertically-centered. 4px horizontal padding inside
+    -- Main is the minimum that keeps glyphs clear of the inner 5-stroke
+    -- chrome (inner stroke is 4px deep at the -4 offset). Combined with
+    -- the 6px outer-to-main inset, total chrome budget = 10px each side
+    -- = 20px (matches the +20 in the width calculation above).
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Position = UDim2.fromOffset(8, 0),
-        Size = UDim2.new(1, -16, 1, 0),
+        Position = UDim2.fromOffset(4, 0),
+        Size = UDim2.new(1, -8, 1, 0),
         BackgroundTransparency = 1, Text = text,
         TextSize = 11, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -4222,14 +4229,69 @@ do
     local Outer, Viewport, BoxOverlay, Labels, Healthbars, RotationState
     local boxRot, fillRot = 0, 0
 
-    -- Build a Camera + clone of LocalPlayer.Character into a WorldModel
-    -- inside the ViewportFrame. Yields/waits for CharacterAdded if necessary
-    -- so the preview ALWAYS renders the real R15 player — no block-figure
-    -- fallback (user explicitly demanded "use an real r15 character, not
-    -- this pixel dude").
-    -- Clones LocalPlayer.Character into the ViewportFrame. NOT yieldable —
-    -- safe to call from a RenderStepped path. Caller (rebuildScene) is
-    -- responsible for waiting on LocalPlayer.CharacterAdded if needed.
+    -- Build a Camera + a NEUTRAL R15 idle rig inside the ViewportFrame.
+    -- Previous impl cloned LocalPlayer.Character — but in BloxStrike that
+    -- carries the active team kit (CT/T uniform, gloves, etc.) which made
+    -- the preview look like a half-loaded gamemode prop. User feedback:
+    -- "character broken (zeigt ct) nimm einfach einen normalen r15 char,
+    -- spawn einen im idle zustand". Now we pull a clean Robloxian via
+    -- CreateHumanoidModelFromUserId(1) (the original ROBLOX account, which
+    -- always returns the bare default R15 rig with no avatar items). If
+    -- that yields/fails, fall back to a hand-built block-R15 with skin/
+    -- shirt/pants tones so the preview never renders empty.
+    local function buildBlockFallback()
+        local m = Instance.new("Model")
+        m.Name = "PreviewRig"
+        local skin   = Color3.fromRGB(244, 220, 192)
+        local shirt  = Color3.fromRGB( 80, 110, 170)
+        local pants  = Color3.fromRGB( 50,  50,  60)
+        local hair   = Color3.fromRGB( 30,  30,  30)
+        local function part(name, size, pos, color)
+            local p = Instance.new("Part")
+            p.Name = name; p.Size = size; p.Position = pos
+            p.Color = color; p.Material = Enum.Material.SmoothPlastic
+            p.Anchored = true; p.CanCollide = false; p.CanQuery = false
+            p.CanTouch = false; p.Massless = true; p.TopSurface = Enum.SurfaceType.Smooth
+            p.BottomSurface = Enum.SurfaceType.Smooth
+            p.Parent = m
+            return p
+        end
+        -- Approximate R15 proportions. Origin at HRP center (Y=3).
+        local hrp = part("HumanoidRootPart", Vector3.new(2, 2, 1), Vector3.new(0, 3, 0), skin)
+        hrp.Transparency = 1
+        part("LowerTorso",    Vector3.new(2,   1.0, 1.0), Vector3.new( 0,    2.55, 0), pants)
+        part("UpperTorso",    Vector3.new(2,   1.2, 1.0), Vector3.new( 0,    3.65, 0), shirt)
+        part("Head",          Vector3.new(1.2, 1.2, 1.2), Vector3.new( 0,    4.85, 0), skin)
+        part("Hair",          Vector3.new(1.3, 0.4, 1.3), Vector3.new( 0,    5.55, 0), hair)
+        part("LeftUpperArm",  Vector3.new(0.8, 1.0, 0.8), Vector3.new(-1.4,  3.85, 0), shirt)
+        part("LeftLowerArm",  Vector3.new(0.8, 1.1, 0.8), Vector3.new(-1.4,  2.8,  0), skin)
+        part("RightUpperArm", Vector3.new(0.8, 1.0, 0.8), Vector3.new( 1.4,  3.85, 0), shirt)
+        part("RightLowerArm", Vector3.new(0.8, 1.1, 0.8), Vector3.new( 1.4,  2.8,  0), skin)
+        part("LeftUpperLeg",  Vector3.new(0.9, 1.0, 1.0), Vector3.new(-0.5,  1.55, 0), pants)
+        part("LeftLowerLeg",  Vector3.new(0.9, 1.1, 1.0), Vector3.new(-0.5,  0.5,  0), pants)
+        part("RightUpperLeg", Vector3.new(0.9, 1.0, 1.0), Vector3.new( 0.5,  1.55, 0), pants)
+        part("RightLowerLeg", Vector3.new(0.9, 1.1, 1.0), Vector3.new( 0.5,  0.5,  0), pants)
+        m.PrimaryPart = hrp
+        return m
+    end
+
+    -- Pose Roblox-default T-pose into a relaxed idle: arms hang ~85deg down.
+    -- Motor6D C0 changes DO propagate through ViewportFrame rendering — the
+    -- viewport joint solver computes child-part CFrames from parent + C0/C1
+    -- on render, no physics step needed. If the rig has no Motor6Ds (block
+    -- fallback) this is a silent no-op.
+    local function tryIdlePose(char)
+        local function bend(armName, jointName, angleZ)
+            local arm = char:FindFirstChild(armName)
+            if not arm then return end
+            local m = arm:FindFirstChild(jointName)
+            if not m or not m:IsA("Motor6D") then return end
+            m.C0 = m.C0 * CFrame.Angles(0, 0, math.rad(angleZ))
+        end
+        pcall(function() bend("LeftUpperArm",  "LeftShoulder",   85)  end)
+        pcall(function() bend("RightUpperArm", "RightShoulder", -85)  end)
+    end
+
     local function buildSceneInto(vp)
         for _, c in vp:GetChildren() do
             if c:IsA("WorldModel") or c:IsA("Camera") or c:IsA("Model") then
@@ -4242,55 +4304,33 @@ do
         cam.Parent = vp
         vp.CurrentCamera = cam
 
-        local origChar = LocalPlayer.Character
-        if not origChar or not origChar.Parent then
-            return nil, cam, nil, nil
+        -- userId 1 = "ROBLOX" account, returns the bare default R15 rig.
+        -- Yields on first call (HTTP fetch); subsequent calls hit the
+        -- internal cache. pcall-wrapped because some executors block
+        -- this API entirely.
+        local char
+        local ok, err = pcall(function()
+            char = Players:CreateHumanoidModelFromUserId(1)
+        end)
+        if not ok or not char then
+            char = buildBlockFallback()
         end
 
-        -- Clone with Archivable temporarily lifted. Some executors lock
-        -- Archivable; pcall keeps us defensive.
-        local origArchivable = origChar.Archivable
-        pcall(function() origChar.Archivable = true end)
-        local ok, clone = pcall(origChar.Clone, origChar)
-        pcall(function() origChar.Archivable = origArchivable end)
-        if not ok or not clone then return nil, cam, nil, nil end
-
-        local char = clone
-
-        -- Strip scripts + script-attached UI/Highlights from the clone so
-        -- the preview only renders the rig itself.
+        -- Strip everything dynamic so the rig is a static prop in the
+        -- viewport — no scripts, no GUIs, no particles, no sounds.
         for _, d in char:GetDescendants() do
             if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript")
                or d:IsA("BillboardGui") or d:IsA("SurfaceGui")
-               or d:IsA("Highlight") then
+               or d:IsA("Highlight") or d:IsA("ParticleEmitter")
+               or d:IsA("Sound") or d:IsA("ProximityPrompt") then
                 pcall(d.Destroy, d)
             end
         end
 
-        -- ViewportFrame renders R15 characters directly — no WorldModel
-        -- needed (and WorldModel adds a layer that occasionally hides
-        -- accessories). Direct viewport parenting is the documented path
-        -- for static character display.
-        char.Parent = vp
-
-        local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-        if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
-
-        -- Pivot whole rig to (0, 3, 0) so camera math below operates in
-        -- local-ish coordinates regardless of where the source char is.
-        if char.PrimaryPart then
-            pcall(function() char:PivotTo(CFrame.new(0, 3, 0)) end)
-        end
-
-        -- Force every BasePart visible. The live character may have
-        -- LocalTransparencyModifier = 1 set by ThirdPerson / Chams; the
-        -- clone inherits it and would otherwise render invisible. Also
-        -- reset Material — some game systems set BasePart.Material to
-        -- ForceField (transparent in viewports).
         for _, p in char:GetDescendants() do
             if p:IsA("BasePart") then
                 pcall(function()
-                    p.Transparency = 0
+                    p.Transparency = (p.Name == "HumanoidRootPart") and 1 or 0
                     p.LocalTransparencyModifier = 0
                     p.Anchored = true
                     p.CanCollide = false
@@ -4298,7 +4338,7 @@ do
                     p.CanTouch = false
                     p.Massless = true
                     if p.Material == Enum.Material.ForceField then
-                        p.Material = Enum.Material.Plastic
+                        p.Material = Enum.Material.SmoothPlastic
                     end
                 end)
             elseif p:IsA("Decal") then
@@ -4308,9 +4348,6 @@ do
             end
         end
 
-        -- Disable Humanoid state changes so the rig holds its anchored
-        -- pose. NameDisplay/HealthDisplay turned off so the floating
-        -- Humanoid GUI doesn't overlay the ESP preview labels.
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             pcall(function()
@@ -4321,6 +4358,17 @@ do
                 hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
             end)
         end
+
+        char.Parent = vp
+        local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+        if hrp and not char.PrimaryPart then char.PrimaryPart = hrp end
+        if char.PrimaryPart then
+            pcall(function() char:PivotTo(CFrame.new(0, 3, 0)) end)
+        end
+
+        -- Apply idle pose AFTER pivot so the joint solver picks up the
+        -- final root CFrame.
+        tryIdlePose(char)
 
         local head = char:FindFirstChild("Head")
         return char, cam, hrp, head
@@ -4408,18 +4456,23 @@ do
             Active = true,
         })
 
-        -- ESP overlay using UIStroke borders — same structure as the real
-        -- ESP in main.lua (outerBox/fillBox/innerBox with strokes painting
-        -- the perimeter, NOT filled rectangles). The old impl used filled
-        -- rectangles that covered the viewport when opaque, hiding the
-        -- character — the user-reported "character disappears" bug.
+        -- ESP overlay — children of ViewportFrame, NOT siblings. ViewportFrame
+        -- inherits from GuiObject so its GuiObject children render as a UI
+        -- layer on top of the 3D scene. This lets the box follow the char in
+        -- screen-space via per-frame Camera:WorldToViewportPoint over the
+        -- rig's part-corners (computed in update() below).
+        --
+        -- Previously the overlay was a static centered rectangle (sibling of
+        -- Viewport) so the ESP "box" never moved with the rotated character
+        -- — that was the "ESP renderd extrem falsch" complaint.
         BoxOverlay = { _vpw = VPW, _vph = VPH }
 
-        local function makeBoxStrokeLayer(posOff, sizeOff, strokeColor, zi)
-            local f = mk("Frame", { Parent = content, ZIndex = zi,
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.new(0.5, posOff, 0.5, posOff),
-                Size = UDim2.fromOffset(VPW + sizeOff, VPH + sizeOff),
+        local function makeBoxStrokeLayer(strokeColor, zi)
+            local f = mk("Frame", { Parent = Viewport, ZIndex = zi,
+                AnchorPoint = Vector2.new(0, 0),
+                Position = UDim2.fromOffset(0, 0),
+                Size = UDim2.fromOffset(0, 0),
+                Visible = false,
                 BackgroundTransparency = 1, BorderSizePixel = 0 })
             local s = Instance.new("UIStroke"); s.Name = "\0"
             s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -4431,29 +4484,27 @@ do
             return f, s
         end
 
-        -- 1px BLACK outline at +1 inset (matches real ESP outerBox)
+        -- 3-layer stroke stack (outer black inset +1, colored main at edge,
+        -- inner black inset -1) — same structure the real ESP uses.
         BoxOverlay.outerBox, BoxOverlay.outlineStroke =
-            makeBoxStrokeLayer(-1, 2, Color3.new(0, 0, 0), 233)
-        -- 1px COLORED main box stroke at viewport bounds (matches mainBoxStroke)
+            makeBoxStrokeLayer(Color3.new(0, 0, 0), 233)
         BoxOverlay.fillBox, BoxOverlay.mainBoxStroke =
-            makeBoxStrokeLayer(0, 0, Color3.new(1, 1, 1), 234)
+            makeBoxStrokeLayer(Color3.new(1, 1, 1), 234)
         BoxOverlay.fillBox.BackgroundColor3 = Color3.new(1, 1, 1)
-        BoxOverlay.fillBox.BackgroundTransparency = 1
         local fillGrad = Instance.new("UIGradient"); fillGrad.Name = "\0"
         fillGrad.Enabled = false; fillGrad.Parent = BoxOverlay.fillBox
         local mainBoxGrad = Instance.new("UIGradient"); mainBoxGrad.Name = "\0"
         mainBoxGrad.Enabled = false; mainBoxGrad.Parent = BoxOverlay.mainBoxStroke
         BoxOverlay.fillGrad = fillGrad
         BoxOverlay.mainBoxGrad = mainBoxGrad
-        -- 1px BLACK inline at -1 inset (matches real ESP innerBox)
         BoxOverlay.innerBox, BoxOverlay.inlineStroke =
-            makeBoxStrokeLayer(1, -2, Color3.new(0, 0, 0), 235)
+            makeBoxStrokeLayer(Color3.new(0, 0, 0), 235)
 
-        -- Labels (Top / Right / Left / Down) — anchored relative to viewport.
-        local function makeLabel(anchor, align, xOff, yOff, sizeX, sizeY)
-            local l = mkText("TextLabel", { Parent = content, ZIndex = 236,
+        -- Labels — children of Viewport, anchored to box edges per-frame.
+        local function makeLabel(anchor, align, sizeX, sizeY)
+            local l = mkText("TextLabel", { Parent = Viewport, ZIndex = 236,
                 AnchorPoint = anchor,
-                Position = UDim2.new(0.5, xOff, 0.5, yOff),
+                Position = UDim2.fromOffset(0, 0),
                 Size = UDim2.fromOffset(sizeX, sizeY),
                 BackgroundTransparency = 1, Text = "",
                 TextColor3 = Color3.new(1, 1, 1), TextSize = 12,
@@ -4462,20 +4513,19 @@ do
             return l
         end
         Labels = {
-            Top   = makeLabel(Vector2.new(0.5, 1), Enum.TextXAlignment.Center, 0, -(VPH/2) - 4, VPW, 14),
-            Down  = makeLabel(Vector2.new(0.5, 0), Enum.TextXAlignment.Center, 0,  (VPH/2) + 4, VPW, 14),
-            Left  = makeLabel(Vector2.new(1, 0.5), Enum.TextXAlignment.Right, -(VPW/2) - 4, 0, 50, VPH),
-            Right = makeLabel(Vector2.new(0, 0.5), Enum.TextXAlignment.Left,   (VPW/2) + 4, 0, 50, VPH),
+            Top   = makeLabel(Vector2.new(0.5, 1), Enum.TextXAlignment.Center, 200, 14),
+            Down  = makeLabel(Vector2.new(0.5, 0), Enum.TextXAlignment.Center, 200, 14),
+            Left  = makeLabel(Vector2.new(1, 0.5), Enum.TextXAlignment.Right,   60, 200),
+            Right = makeLabel(Vector2.new(0, 0.5), Enum.TextXAlignment.Left,    60, 200),
         }
 
         -- Healthbar — one frame per side, only the active one is visible.
-        -- Matches the real ESP's healthbar geometry (1px thick, runs along
-        -- the box edge with a 5px gap).
-        local function makeHB(anchor, posOff, sz)
-            local f = mk("Frame", { Parent = content, ZIndex = 235,
+        -- 1px thick, runs along the box edge with a 5px gap.
+        local function makeHB(anchor)
+            local f = mk("Frame", { Parent = Viewport, ZIndex = 235,
                 AnchorPoint = anchor,
-                Position = UDim2.new(0.5, posOff.X, 0.5, posOff.Y),
-                Size = sz,
+                Position = UDim2.fromOffset(0, 0),
+                Size = UDim2.fromOffset(0, 0),
                 BackgroundColor3 = Color3.fromRGB(12, 255, 93),
                 BorderSizePixel = 0, Visible = false })
             local s = Instance.new("UIStroke"); s.Name = "\0"
@@ -4488,25 +4538,10 @@ do
             return f, g
         end
         Healthbars = {
-            Top   = (function()
-                local f, g = makeHB(Vector2.new(0.5, 1), Vector2.new(0, -(VPH/2) - 5), UDim2.fromOffset(VPW, 1))
-                return { frame = f, grad = g }
-            end)(),
-            Down  = (function()
-                local f, g = makeHB(Vector2.new(0.5, 0), Vector2.new(0,  (VPH/2) + 5), UDim2.fromOffset(VPW, 1))
-                g.Rotation = 0
-                return { frame = f, grad = g }
-            end)(),
-            Right = (function()
-                local f, g = makeHB(Vector2.new(0, 0.5), Vector2.new((VPW/2) + 5, 0), UDim2.fromOffset(1, VPH))
-                g.Rotation = 90
-                return { frame = f, grad = g }
-            end)(),
-            Left  = (function()
-                local f, g = makeHB(Vector2.new(1, 0.5), Vector2.new(-(VPW/2) - 5, 0), UDim2.fromOffset(1, VPH))
-                g.Rotation = 90
-                return { frame = f, grad = g }
-            end)(),
+            Top   = (function() local f, g = makeHB(Vector2.new(0.5, 1)); return { frame = f, grad = g } end)(),
+            Down  = (function() local f, g = makeHB(Vector2.new(0.5, 0)); g.Rotation = 0;  return { frame = f, grad = g } end)(),
+            Right = (function() local f, g = makeHB(Vector2.new(0, 0.5)); g.Rotation = 90; return { frame = f, grad = g } end)(),
+            Left  = (function() local f, g = makeHB(Vector2.new(1, 0.5)); g.Rotation = 90; return { frame = f, grad = g } end)(),
         }
 
         -- Drag the WINDOW from the title strip (top 36px, where the rainbow
@@ -4538,11 +4573,10 @@ do
         end
 
         -- Rotate the CHARACTER inside the viewport. Holding MB1 inside the
-        -- viewport spins the character on its Y axis; vertical motion
-        -- pitches the camera (clamped ±60°). Releasing MB1 leaves it where
-        -- the user left it (no auto-spin), matching what the user asked for.
-        -- Default dist=10 puts a full R15 char comfortably in frame at FOV 50.
-        RotationState = { yaw = 0, pitch = 0, dist = 10,
+        -- viewport spins on Y (yaw); vertical motion pitches (clamped ±60°).
+        -- Zoom (mouse wheel) was REMOVED per user feedback — fixed distance
+        -- keeps the rig sized so the ESP box always frames it cleanly.
+        RotationState = { yaw = 0, pitch = 0, dist = 11,
             dragging = false, last = nil }
         track(Viewport.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -4568,55 +4602,28 @@ do
                 math.rad(-60), math.rad(60))
         end))
 
-        -- Mouse wheel inside viewport = zoom (6..20 stud distance from char).
-        track(Viewport.InputChanged:Connect(function(input)
-            if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
-            RotationState.dist = math.clamp(RotationState.dist - input.Position.Z * 0.5, 6, 20)
-        end))
-
         ESPPreview._content = content
-
-        -- Rebuild the scene when LocalPlayer respawns — keeps the preview
-        -- showing the live character even after deaths. CharacterAdded
-        -- fires AFTER the new char is fully loaded so the clone has a
-        -- complete rig + accessories at clone time.
-        track(LocalPlayer.CharacterAdded:Connect(function()
-            -- task.defer so the new character has a moment to populate
-            -- accessories/decals before we clone it.
-            task.defer(function()
-                if ESPPreview._visible then rebuildScene() end
-            end)
-        end))
+        -- No CharacterAdded listener — the preview rig is a STATIC default
+        -- R15 (userId 1), independent of LocalPlayer respawn lifecycle.
     end
 
-    -- Rebuild scene whenever requested. Runs in a background task because
-    -- it may need to wait for LocalPlayer.CharacterAdded (during initial
-    -- spawn or right after a death). Show() doesn't block on this — the
-    -- viewport stays empty until the clone lands, then the per-frame
-    -- update() picks up ESPPreview._char and starts orbiting.
+    -- Rebuild scene whenever requested. CreateHumanoidModelFromUserId YIELDS
+    -- on first call (HTTP fetch for the userId 1 avatar JSON + mesh assets);
+    -- subsequent calls hit Roblox's internal cache. Wrap in task.spawn so
+    -- Show() doesn't block on the initial fetch.
     rebuildScene = function()
         if not Viewport then return end
-        -- Cancel any in-flight rebuild so multiple Show()s don't race.
         ESPPreview._rebuildToken = (ESPPreview._rebuildToken or 0) + 1
         local myToken = ESPPreview._rebuildToken
         task.spawn(function()
-            -- Wait for char to be available (with a 10s ceiling so we
-            -- don't lock the task forever in pathological cases).
-            local origChar = LocalPlayer.Character
-            local deadline = tick() + 10
-            while not (origChar and origChar.Parent) and tick() < deadline do
-                LocalPlayer.CharacterAdded:Wait()
-                origChar = LocalPlayer.Character
-                -- Give Roblox a beat to finish populating accessories +
-                -- meshes after the spawn event — cloning too early lands
-                -- a partially-populated rig that renders missing limbs.
-                task.wait(0.5)
-            end
-            -- If a newer rebuildScene started, abandon this one.
             if myToken ~= ESPPreview._rebuildToken then return end
             if not Viewport or not Viewport.Parent then return end
-
             local char, cam, hrp, head = buildSceneInto(Viewport)
+            -- Stale token after the yield — newer Show() raced us.
+            if myToken ~= ESPPreview._rebuildToken then
+                pcall(function() if char then char:Destroy() end end)
+                return
+            end
             ESPPreview._char = char
             ESPPreview._cam  = cam
             ESPPreview._hrp  = hrp
@@ -4662,9 +4669,72 @@ do
         local fillOn = Toggles.ESPFill and Toggles.ESPFill.Value
         local hbOn   = Toggles.ESPHealthbar and Toggles.ESPHealthbar.Value
 
-        BoxOverlay.outlineStroke.Enabled  = boxOn and true or false
-        BoxOverlay.mainBoxStroke.Enabled  = boxOn and true or false
-        BoxOverlay.inlineStroke.Enabled   = boxOn and true or false
+        -- ─── SCREEN-SPACE BOUNDING BOX OF THE CHARACTER ──────────────────
+        -- Project every part's 8 corners through cam:WorldToViewportPoint
+        -- (which already operates in ViewportFrame pixel coordinates) and
+        -- take the min/max as the on-screen char bounds. This is what
+        -- makes the ESP overlay TRACK the rotating character instead of
+        -- sitting at a fixed centered rectangle.
+        local minX, minY = math.huge, math.huge
+        local maxX, maxY = -math.huge, -math.huge
+        local visible = false
+        for _, p in char:GetDescendants() do
+            if p:IsA("BasePart") and p.Transparency < 1 then
+                local cf, size = p.CFrame, p.Size
+                local sx, sy, sz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+                for ix = -1, 1, 2 do for iy = -1, 1, 2 do for iz = -1, 1, 2 do
+                    local worldPt = (cf * CFrame.new(ix * sx, iy * sy, iz * sz)).Position
+                    local sp, inFront = cam:WorldToViewportPoint(worldPt)
+                    if inFront then
+                        if sp.X < minX then minX = sp.X end
+                        if sp.Y < minY then minY = sp.Y end
+                        if sp.X > maxX then maxX = sp.X end
+                        if sp.Y > maxY then maxY = sp.Y end
+                        visible = true
+                    end
+                end end end
+            end
+        end
+        if visible then
+            minX = math.max(0, math.min(BoxOverlay._vpw, minX))
+            maxX = math.max(0, math.min(BoxOverlay._vpw, maxX))
+            minY = math.max(0, math.min(BoxOverlay._vph, minY))
+            maxY = math.max(0, math.min(BoxOverlay._vph, maxY))
+        end
+        local boxX, boxY = math.floor(minX), math.floor(minY)
+        local boxW, boxH = math.ceil(maxX - minX), math.ceil(maxY - minY)
+        if boxW < 2 then boxW = 2 end
+        if boxH < 2 then boxH = 2 end
+
+        -- Position the 3 box layers (outer black inset +1, main at edge,
+        -- inner black inset -1) to the computed screen rect. Visibility
+        -- is also gated on `visible` so the box hides while the camera
+        -- is mid-orbit transition.
+        local showBox = boxOn and visible
+        BoxOverlay.outerBox.Visible = showBox
+        BoxOverlay.fillBox.Visible  = showBox
+        BoxOverlay.innerBox.Visible = showBox
+        BoxOverlay.outlineStroke.Enabled = showBox
+        BoxOverlay.mainBoxStroke.Enabled = showBox
+        BoxOverlay.inlineStroke.Enabled  = showBox
+        if showBox then
+            BoxOverlay.outerBox.Position = UDim2.fromOffset(boxX - 1, boxY - 1)
+            BoxOverlay.outerBox.Size     = UDim2.fromOffset(boxW + 2, boxH + 2)
+            BoxOverlay.fillBox.Position  = UDim2.fromOffset(boxX, boxY)
+            BoxOverlay.fillBox.Size      = UDim2.fromOffset(boxW, boxH)
+            BoxOverlay.innerBox.Position = UDim2.fromOffset(boxX + 1, boxY + 1)
+            BoxOverlay.innerBox.Size     = UDim2.fromOffset(math.max(2, boxW - 2),
+                                                            math.max(2, boxH - 2))
+        end
+
+        -- Position labels + healthbars relative to the computed box. Done
+        -- now (before the gradient/color application below) so a single
+        -- pass covers all geometry. Visible-state is applied later.
+        BoxOverlay._bx = boxX
+        BoxOverlay._by = boxY
+        BoxOverlay._bw = boxW
+        BoxOverlay._bh = boxH
+        BoxOverlay._visible = visible
 
         if boxOn then
             local c1 = Options.ESPBoxColor and Options.ESPBoxColor.Value or Color3.new(1, 1, 1)
@@ -4728,12 +4798,33 @@ do
             BoxOverlay.fillGrad.Enabled = false
         end
 
+        -- Anchor helpers — all four sides reference the dynamic box rect
+        -- stored on BoxOverlay (boxX / boxY / boxW / boxH). Top/Down sit
+        -- 5px above/below the box edge; Left/Right sit 5px outside.
+        local bx, by = BoxOverlay._bx, BoxOverlay._by
+        local bw, bh = BoxOverlay._bw, BoxOverlay._bh
+        local boxVisible = BoxOverlay._visible
+        local cxMid = bx + bw * 0.5
+
         -- Healthbar — show only the side picked by ESPHealthbarPos.
         local hbPos = Options.ESPHealthbarPos and Options.ESPHealthbarPos.Value or "Top"
         local hbC = Options.ESPHealthbarColor and Options.ESPHealthbarColor.Value or Color3.fromRGB(12, 255, 93)
         local hbC2 = Options.ESPHealthbarColor2 and Options.ESPHealthbarColor2.Value or Color3.fromRGB(255, 0, 0)
         for pos, hb in Healthbars do
-            if hbOn and pos == hbPos then
+            if hbOn and boxVisible and pos == hbPos then
+                if pos == "Top" then
+                    hb.frame.Position = UDim2.fromOffset(cxMid, by - 5)
+                    hb.frame.Size     = UDim2.fromOffset(bw, 1)
+                elseif pos == "Down" then
+                    hb.frame.Position = UDim2.fromOffset(cxMid, by + bh + 5)
+                    hb.frame.Size     = UDim2.fromOffset(bw, 1)
+                elseif pos == "Left" then
+                    hb.frame.Position = UDim2.fromOffset(bx - 5, by + bh * 0.5)
+                    hb.frame.Size     = UDim2.fromOffset(1, bh)
+                elseif pos == "Right" then
+                    hb.frame.Position = UDim2.fromOffset(bx + bw + 5, by + bh * 0.5)
+                    hb.frame.Size     = UDim2.fromOffset(1, bh)
+                end
                 hb.frame.Visible = true
                 if Toggles.ESPHealthbarGradient and Toggles.ESPHealthbarGradient.Value then
                     hb.grad.Enabled = true
@@ -4751,8 +4842,9 @@ do
             end
         end
 
-        -- Labels: build per-position text from enabled toggles + fake data,
-        -- mirroring the real ESP's per-info dispatch.
+        -- Labels — same per-frame anchoring against the dynamic box rect.
+        -- Text content is computed from Toggles/Options below, then the
+        -- position is set once per side.
         local bufs = { Top = {}, Right = {}, Left = {}, Down = {} }
         local cols = {}
         local sizes = {}
@@ -4775,11 +4867,24 @@ do
         end
         for pos, lbl in Labels do
             local b = bufs[pos]
-            if b and #b > 0 then
+            if boxVisible and b and #b > 0 then
                 local sep = (pos == "Top" or pos == "Down") and " | " or "\n"
                 lbl.Text = table.concat(b, sep)
                 lbl.TextColor3 = cols[pos] or Color3.new(1, 1, 1)
                 lbl.TextSize = sizes[pos] or 12
+                if pos == "Top" then
+                    lbl.Position = UDim2.fromOffset(cxMid, by - 4)
+                    lbl.Size     = UDim2.fromOffset(math.max(bw + 40, 80), 14)
+                elseif pos == "Down" then
+                    lbl.Position = UDim2.fromOffset(cxMid, by + bh + 4)
+                    lbl.Size     = UDim2.fromOffset(math.max(bw + 40, 80), 14)
+                elseif pos == "Left" then
+                    lbl.Position = UDim2.fromOffset(bx - 4, by + bh * 0.5)
+                    lbl.Size     = UDim2.fromOffset(60, math.max(bh, 40))
+                elseif pos == "Right" then
+                    lbl.Position = UDim2.fromOffset(bx + bw + 4, by + bh * 0.5)
+                    lbl.Size     = UDim2.fromOffset(60, math.max(bh, 40))
+                end
                 lbl.Visible = true
             else
                 lbl.Visible = false
