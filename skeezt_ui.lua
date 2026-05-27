@@ -1269,7 +1269,23 @@ local function attachWidgets(target, body)
                 math.floor(col.R * 255 + 0.5),
                 math.floor(col.G * 255 + 0.5),
                 math.floor(col.B * 255 + 0.5))
-            if applyCb then safeCallback(cp.Callback, col) end
+            if applyCb then
+                safeCallback(cp.Callback, col)
+                -- Fire OnChanged listeners too — UI drags (svUpd / hueUpd)
+                -- call update(true) directly, bypassing SetValue / SetValueRGB.
+                -- Without this fan-out, the ThemeManager's per-field refresh
+                -- (registered via Options[field]:OnChanged) never ran on a
+                -- live drag, so dragging the ColorPicker in the Themes
+                -- groupbox didn't repaint the UI — user-reported as
+                -- "colors aus dem thememanager übertragen sich nicht".
+                -- withOnChanged stashes the listeners on cp._listeners
+                -- when Library.Options[id] = withOnChanged(cp) runs after
+                -- this update() is defined, so the table exists by the
+                -- time a user interaction triggers a drag.
+                if cp._listeners then
+                    for _, l in cp._listeners do pcall(l, col) end
+                end
+            end
         end
         update(false)
         function cp:SetValue(c)
@@ -2041,14 +2057,12 @@ function Library:CreateWindow(opts)
                 for _, t in tabs do
                     local active = (t == sub)
                     t._body.Visible = active
-                    -- Active sub-tab = Accent so the user can see at a
-                    -- glance which sub-tab (Ragebot / Triggerbot / SilentAim)
-                    -- is currently open. Previously TextActive (white) was
-                    -- indistinguishable from the hover/text colors against
-                    -- the dark groupbox bg — all four buttons read as
-                    -- "grey" until clicked. Accent gives an unmistakable
-                    -- "this one is active" marker.
-                    t._btn.TextColor3 = active and Theme.Accent or Theme.TextDim
+                    -- Active sub-tab = TextActive (white). The first
+                    -- iteration of this fix used Theme.Accent to make
+                    -- "which sub-tab is open" obvious, but the user
+                    -- preferred white so the active sub-tab reads as
+                    -- a normal "selected" state, not as an alert.
+                    t._btn.TextColor3 = active and Theme.TextActive or Theme.TextDim
                 end
             end))
             track(btn.MouseEnter:Connect(function()
@@ -2058,18 +2072,18 @@ function Library:CreateWindow(opts)
                 if not sub._body.Visible then btn.TextColor3 = Theme.TextDim end
             end))
 
-            -- First tab becomes active by default — paint it Accent so the
+            -- First tab becomes active by default — paint it white so the
             -- "which sub-tab is open" cue is visible immediately on first
             -- render (not just after the user has clicked something).
             if #tabs == 1 then
                 body_.Visible = true
-                btn.TextColor3 = Theme.Accent
+                btn.TextColor3 = Theme.TextActive
             end
 
-            -- Theme switch: re-apply Accent vs TextDim based on live visibility.
+            -- Theme switch: re-apply active vs dim based on live visibility.
             Library:OnColorUpdate(function()
                 if not btn.Parent then return end
-                btn.TextColor3 = body_.Visible and Theme.Accent or Theme.TextDim
+                btn.TextColor3 = body_.Visible and Theme.TextActive or Theme.TextDim
             end)
             return sub
         end
@@ -2548,12 +2562,18 @@ end
 function Library:Notify(text, duration)
     duration = duration or 5
     text = tostring(text or "")
-    -- Layout (user spec):
-    --   • 4px outer→main on LEFT/RIGHT/BOTTOM, 6px on TOP (incl 2px rainbow)
-    --   • Rainbow caps Main's top edge (Y=6), shadow at Y=7
-    --   • Text centered, 6px text→main padding via UIPadding on Main
-    --   • h = 48 (was 42) — extra height fixes "zu klein" complaint
-    local h = 48
+    -- WATERMARK-STYLE LAYOUT (user spec 2026-05-27: "padding von
+    -- notifications ist schlecht, nutze das gleiche wie von watermark").
+    -- Geometry mirrors the Watermark frame EXACTLY:
+    --   • Rainbow at (6, 6) size (1, -12, 0, 2)  — sibling of Main
+    --   • Shadow  at (6, 7) size (1, -12, 0, 1)
+    --   • Main    at (10, 14) size (1, -20, 1, -24) — 10/10/14/10 chrome
+    --   • Label   at (5, -1) size (1, -10, 1, 0)   — 5px L/R inside Main
+    -- Chrome budget = 20 (outer→main 10+10) + 10 (main→label 5+5) = 30px.
+    -- "schmaler" (narrower) follows from removing the previous 30% safety
+    -- multiplier — the post-render TextBounds correction below still
+    -- guarantees full-text fit even with the tighter base estimate.
+    local h = 44
 
     -- Anchor follows NotificationPosition so the grow-from-edge feels right.
     local ax = 0
@@ -2576,30 +2596,10 @@ function Library:Notify(text, duration)
         end
     end
 
-    -- Inner Main: TabBg with the 5-stroke INNER composite.
-    local main = mk("Frame", { Parent = outer,
-        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
-        BackgroundTransparency = 1,
-        ClipsDescendants = false,
-        Size = UDim2.new(1, -8, 1, -10),
-        Position = UDim2.fromOffset(4, 6), ZIndex = 201 })
-    applyLayeredStrokes(main, "inner")
-    local innerStrokes = {}
-    for _, c in main:GetChildren() do
-        if c:IsA("UIStroke") then
-            c.Transparency = 1
-            innerStrokes[#innerStrokes + 1] = c
-        end
-    end
-    -- Explicit 6px text→main padding (was 4). User spec: visible padding
-    -- between text and the inner-stroke band so the toast doesn't read as
-    -- "all text, no chrome".
-    uipad(main, 6, 6, 6, 6)
-
-    -- Rainbow strip + 50% shadow — sibling of Main inside Outer.
-    -- Y=6 caps Main's top edge; shadow Y=7 (1px line at rainbow bottom).
+    -- Rainbow strip + 50% shadow — sibling of Main inside Outer, exactly
+    -- like the Watermark (Y=6, shadow Y=7).
     local rb = mk("Frame", { Parent = outer, ZIndex = 202,
-        Size = UDim2.new(1, -8, 0, 2), Position = UDim2.fromOffset(4, 6),
+        Size = UDim2.new(1, -12, 0, 2), Position = UDim2.fromOffset(6, 6),
         BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
         BackgroundTransparency = 1 })
     local rbGrad = Instance.new("UIGradient"); rbGrad.Name = "\0"
@@ -2610,15 +2610,36 @@ function Library:Notify(text, duration)
     }
     rbGrad.Parent = rb
     local rbShadow = mk("Frame", { Parent = outer, ZIndex = 203,
-        Size = UDim2.new(1, -8, 0, 1), Position = UDim2.fromOffset(4, 7),
+        Size = UDim2.new(1, -12, 0, 1), Position = UDim2.fromOffset(6, 7),
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0 })
 
-    -- Label fills the padded interior of Main (UIPadding handles inset).
+    -- Inner Main: TabBg, 5-stroke INNER composite. Watermark-identical
+    -- inset (10px L/R/Bottom, 14px Top to clear the rainbow+shadow).
+    local main = mk("Frame", { Parent = outer,
+        BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0,
+        BackgroundTransparency = 1,
+        ClipsDescendants = false,
+        Size = UDim2.new(1, -20, 1, -24),
+        Position = UDim2.fromOffset(10, 14), ZIndex = 201 })
+    applyLayeredStrokes(main, "inner")
+    local innerStrokes = {}
+    for _, c in main:GetChildren() do
+        if c:IsA("UIStroke") then
+            c.Transparency = 1
+            innerStrokes[#innerStrokes + 1] = c
+        end
+    end
+
+    -- Label fills Main with 5px L/R padding (matches Watermark label
+    -- placement). Y=-1 nudges the glyph baseline 1px up so it sits
+    -- visually centered against the inner-stroke top edge — same offset
+    -- the Watermark uses.
     local lbl = mkText("TextLabel", { Parent = main, ZIndex = 204,
-        Size = UDim2.fromScale(1, 1),
+        Position = UDim2.fromOffset(5, -1),
+        Size = UDim2.new(1, -10, 1, 0),
         BackgroundTransparency = 1, Text = text,
-        TextSize = 13, TextColor3 = Theme.TextActive,
+        TextSize = 12, TextColor3 = Theme.TextActive,
         TextXAlignment = Enum.TextXAlignment.Center,
         TextYAlignment = Enum.TextYAlignment.Center,
         TextTransparency = 1,
@@ -2628,29 +2649,20 @@ function Library:Notify(text, duration)
         if c:IsA("UIStroke") then lblStroke = c; lblStroke.Transparency = 1; break end
     end
 
-    -- Width calculation: TextService(SourceSansBold) is consistently narrower
-    -- than the live-rendered custom Verdana Bold (user complaint: "zeigen
-    -- nicht den gesamten text"). Triple safety:
-    --   1. Take max(TS_SourceSansBold, measureText_bold).
-    --   2. Add 30% safety multiplier — Verdana Bold's glyph-advance is
-    --      reliably ~15-25% wider than SourceSansBold at the same size.
-    --   3. Chrome budget +24 (8 outer + 12 main UIPadding + 4 visual
-    --      breathing).
-    --   4. After first Heartbeat, read lbl.TextBounds (the ACTUAL rendered
-    --      width in the live font) and re-tween width if our estimate
-    --      undershot. This is the definitive fix — TextBounds is the
-    --      ground truth Roblox itself uses to draw the glyphs.
-    --   5. Floor 140px so a 1-char toast still reads as a notification.
+    -- Width = max(TS_SourceSansBold, measureText_bold) + chrome(30).
+    -- No safety multiplier — the post-render TextBounds correction below
+    -- catches any heuristic miss. Floor 80px so a 1-char toast doesn't
+    -- collapse to a square chip.
     local TS = game:GetService("TextService")
     local tsW = 0
     local ok, b = pcall(function()
-        return TS:GetTextSize(text, 13, Enum.Font.SourceSansBold,
-            Vector2.new(99999, 16))
+        return TS:GetTextSize(text, 12, Enum.Font.SourceSansBold,
+            Vector2.new(99999, 14))
     end)
     if ok and b then tsW = b.X end
-    local mW = measureText(text, 13, "bold")
-    local textW = math.max(tsW, mW) * 1.3
-    local w = math.max(140, math.ceil(textW) + 24)
+    local mW = measureText(text, 12, "bold")
+    local textW = math.max(tsW, mW)
+    local w = math.max(80, math.ceil(textW) + 30)
 
     -- ─── Animations (sanyui-style two-phase) ────────────────────────────
     local TI_IN  = TweenInfo.new(0.35, Enum.EasingStyle.Quad,
@@ -2677,23 +2689,19 @@ function Library:Notify(text, duration)
     end
 
     -- Post-render width correction. TextService(SourceSansBold) is only a
-    -- proxy — the LIVE font (custom Verdana Bold loaded from sanyoner/
-    -- fonts) renders glyphs at a different advance. lbl.TextBounds.X
-    -- reads the REAL post-render width in the active font, but it's only
-    -- populated AFTER Roblox has rendered the text at least once. Wait
-    -- one Heartbeat, re-measure, and re-tween if our heuristic
-    -- undershot. This is what guarantees long-text notifications fit
-    -- regardless of which font ultimately loaded.
+    -- proxy — the LIVE font (custom Verdana Bold) renders glyphs at a
+    -- different advance. lbl.TextBounds.X reads the REAL post-render
+    -- width in the active font, but it's only populated AFTER Roblox has
+    -- rendered the text at least once. Wait one Heartbeat, re-measure,
+    -- and re-tween if our heuristic undershot. Chrome budget matches the
+    -- watermark-style layout (30px: 20 outer→main + 10 main→label).
     task.spawn(function()
         RunService.Heartbeat:Wait()
         if not (outer and outer.Parent and lbl and lbl.Parent) then return end
         local realW = 0
         pcall(function() realW = lbl.TextBounds.X end)
         if realW > 0 then
-            -- Required outer width = real text width + chrome budget (24px).
-            -- Bump if our heuristic was wrong; never shrink (the grow tween
-            -- is mid-flight and shrinking would visibly snap).
-            local needed = math.ceil(realW) + 24
+            local needed = math.ceil(realW) + 30
             if needed > w then
                 pcall(outer.TweenSize, outer,
                     UDim2.fromOffset(needed, h),
