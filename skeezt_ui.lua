@@ -969,7 +969,10 @@ local function attachWidgets(target, body)
         end
         local function refresh()
             valLbl.Text = fmtV()
-            valLbl.TextColor3 = hasSelection() and Theme.TextActive or Theme.TextDim
+            -- Active selection → Accent color (per user spec). Falls back
+            -- to TextDim for empty / "None" so a fresh dropdown reads as
+            -- inactive at a glance.
+            valLbl.TextColor3 = hasSelection() and Theme.Accent or Theme.TextDim
         end
 
         -- Forward-declared so SetValue can call it. The actual definition
@@ -1094,6 +1097,17 @@ local function attachWidgets(target, body)
         end
         for _, v in values do addRow(v) end
         refreshRows()
+
+        -- Theme switch: re-run refresh() + refreshRows() so the live Accent /
+        -- TextDim / HoverBg values flow into the dropdown's state-dependent
+        -- visuals (closed-button valLbl color + active popup row highlight).
+        -- These were set via direct property assignment (NOT through mk()),
+        -- so the stamp-based UpdateColorsUsingRegistry doesn't reach them.
+        Library:OnColorUpdate(function()
+            if not mainBtn.Parent then return end
+            refresh()
+            refreshRows()
+        end)
 
         -- SaveManager parity: replaces the dropdown's value list at runtime
         -- (config-list rebuilds after Create/Delete) and clears the current
@@ -1583,6 +1597,17 @@ local function attachWidgets(target, body)
         -- registration id if the user didn't pass a Text label.
         kp._label = opt.Text or id
 
+        -- Theme switch: re-paint the keypicker's state-dependent colors.
+        -- refreshColor(kp:GetState()) handles the picker label (Accent when
+        -- active, TextDim otherwise); refreshModeRows handles the mode-popup
+        -- highlight (Accent on the selected mode). Both were set via direct
+        -- property writes, bypassing the stamp registry.
+        Library:OnColorUpdate(function()
+            if not picker.Parent then return end
+            pcall(function() refreshColor(kp:GetState()) end)
+            pcall(refreshModeRows)
+        end)
+
         -- Register every keypicker globally so the keybinds HUD can iterate
         -- and show an entry per currently-active bind. NoUI keypickers (like
         -- the Menu bind) skip registration so they don't take up a HUD slot.
@@ -1770,16 +1795,34 @@ function Library:CreateWindow(opts)
 
     -- Tab content frame — RGB(25,25,25), 5-stroke INNER border, sits at
     -- Y=36 with width = full minus 40 (20px gutter each side).
+    -- Content holds an INNER bg image (sibling of ContentInner, ZIndex 0)
+    -- so the user's custom background also shows through the central
+    -- content area — not just the thin chrome ring around it. Without
+    -- this second bg image the user's SetBackgroundImage swap was
+    -- technically working but only visible in a ~20px frame around the
+    -- menu (the Window's bgImg was hidden behind the opaque Content fill).
     local Content = mk("Frame", { Parent = Window,
         Size = UDim2.new(1, -40, 1, -56),
         Position = UDim2.fromOffset(20, 36),
         BackgroundColor3 = Theme.TabBg, BorderSizePixel = 0, ZIndex = 4 })
     applyLayeredStrokes(Content, "inner")
 
+    -- Second bg image — fills Content (below ContentInner so widgets
+    -- render on top of it). Registered in _BgImageInstances so
+    -- SetBackgroundImage updates it alongside the Window-level bgImg.
+    local bgImgInner = mk("ImageLabel", { Parent = Content,
+        Size = UDim2.fromScale(1, 1),
+        Position = UDim2.fromScale(0, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        Image = BG_ASSET or "", ScaleType = Enum.ScaleType.Stretch,
+        ImageTransparency = 0.15,  -- subtle overlay — keeps TabBg readable
+        ZIndex = 1 })
+    Library._BgImageInstances[#Library._BgImageInstances + 1] = bgImgInner
+
     local ContentInner = mk("Frame", { Parent = Content,
         Size = UDim2.new(1, -20, 1, -20),
         Position = UDim2.fromOffset(10, 10),
-        BackgroundTransparency = 1, BorderSizePixel = 0 })
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 2 })
 
     -- Drag handle — covers the rainbow + tab bar area (above content).
     local dragging, dragStart, startPos
